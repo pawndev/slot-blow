@@ -19,6 +19,7 @@ use slot_ui::{
 use crate::app::{App, LinkRow, Phase};
 use crate::build_info::Build;
 use crate::cart_faces::CartFaces;
+use crate::dust::{self, Dust};
 use crate::face_builder::FaceBuilder;
 use crate::label_cache::{self, Rebuild};
 use crate::link_art_builder::LinkArtBuilder;
@@ -55,6 +56,7 @@ pub struct Frontend {
     clocks: Clocks,
     about: AboutFace,
     quick_clock: QuickClock,
+    glitch: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -136,6 +138,7 @@ impl Frontend {
             clocks: Clocks::default(),
             about: AboutFace::default(),
             quick_clock: QuickClock::default(),
+            glitch: Vec::new(),
         }
     }
 
@@ -266,7 +269,9 @@ impl Frontend {
             .collect();
         let steps = faces.link_steps.into_iter().map(&mut up).collect();
         let fails = faces.link_fails.into_iter().map(&mut up).collect();
+        let (blow, blow_w, _) = up(faces.blow);
         let app = self.session.app_mut();
+        app.set_blow_face(blow, blow_w);
         app.set_link_badge_faces(link_badges);
         app.set_shutdown_faces(lines);
         app.set_power_menu_faces(menu);
@@ -344,7 +349,10 @@ impl Frontend {
         if self.draw_rebuild(compositor) {
             return;
         }
-        if let Some(frame) = self.session.frame() {
+        if let Some(g) = self.session.app().glitch() {
+            dust::glitch(&mut self.glitch, g.platform, g.seed, g.at, g.puff);
+            compositor.upload_game(&self.glitch);
+        } else if let Some(frame) = self.session.frame() {
             compositor.upload_game(&frame);
             crate::latency::taken();
         }
@@ -404,6 +412,10 @@ impl Frontend {
         self.draws.clear();
         self.session.app().draw(&mut self.draws);
         compositor.draw_list(&self.draws);
+    }
+
+    pub fn set_dust(&mut self, dust: Dust) {
+        self.session.app_mut().set_dust(dust);
     }
 
     pub fn drive_emulator(&mut self) {
@@ -564,6 +576,7 @@ struct UiFaces {
     link_steps: Vec<UndoFace>,
     link_fails: Vec<UndoFace>,
     toasts: Vec<CartFace>,
+    blow: UndoFace,
 }
 
 impl UiFaces {
@@ -631,6 +644,7 @@ impl UiFaces {
                 .map(|f| menu_face(f.line()))
                 .collect(),
             toasts: Toast::all().into_iter().map(toast_face).collect(),
+            blow: hint_face("B", "Blow"),
         }
     }
 }

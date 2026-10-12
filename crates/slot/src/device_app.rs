@@ -116,6 +116,7 @@ pub fn run() {
     };
     slot::boot_time::mark("audio");
     let mut frontend = Frontend::boot_with(Box::new(platform), sink);
+    frontend.set_dust(slot::dust::Dust::shaken());
     slot::boot_time::mark("frontend");
     frontend.upload_boot_faces(&mut compositor);
     slot::boot_time::mark("faces");
