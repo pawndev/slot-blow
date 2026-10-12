@@ -202,6 +202,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
             dusty: true,
+            dry: true,
         }
     );
 }
@@ -223,6 +224,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         gb_palettes: true,
         gb_palette: GbPalette::parse("GBC Dark Green →A").unwrap(),
         dusty: false,
+        dry: false,
         ..SlotState::default()
     };
     write_slot_state(d.path(), &s).unwrap();
@@ -241,6 +243,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "gb_palettes=1",
         "gb_palette=GBC Dark Green →A",
         "dusty=0",
+        "dry=0",
     ] {
         assert!(text.lines().any(|l| l == line), "no {line} in {text:?}");
     }

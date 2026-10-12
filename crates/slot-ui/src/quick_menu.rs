@@ -21,10 +21,11 @@ pub enum QuickRow {
     Rewind,
     GbPalettes,
     Dusty,
+    Dry,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 15] = [
+    pub const ALL: [QuickRow; 16] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -40,6 +41,7 @@ impl QuickRow {
         QuickRow::Rewind,
         QuickRow::GbPalettes,
         QuickRow::Dusty,
+        QuickRow::Dry,
     ];
 
     pub const MAIN: [QuickRow; 4] = [
@@ -56,7 +58,7 @@ impl QuickRow {
         QuickRow::GbPalettes,
     ];
 
-    pub const GAME: [QuickRow; 7] = [
+    pub const GAME: [QuickRow; 8] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Rewind,
@@ -64,6 +66,7 @@ impl QuickRow {
         QuickRow::Rumble,
         QuickRow::EjectSave,
         QuickRow::Dusty,
+        QuickRow::Dry,
     ];
 
     pub fn index(self) -> usize {
@@ -82,7 +85,8 @@ impl QuickRow {
             | QuickRow::Turbo
             | QuickRow::Rumble
             | QuickRow::EjectSave
-            | QuickRow::Dusty => &QuickRow::GAME,
+            | QuickRow::Dusty
+            | QuickRow::Dry => &QuickRow::GAME,
             _ => &QuickRow::MAIN,
         }
     }
@@ -124,6 +128,7 @@ impl QuickRow {
             QuickRow::Rewind => "Rewind",
             QuickRow::GbPalettes => "GB Palettes",
             QuickRow::Dusty => "Dusty Carts",
+            QuickRow::Dry => "Dry Batteries",
         }
     }
 

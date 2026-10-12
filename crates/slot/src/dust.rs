@@ -205,7 +205,7 @@ fn palette(platform: Platform, rng: &mut Rng) -> Vec<[u8; 3]> {
     }
 }
 
-fn hsv(h: f32, s: f32, v: f32) -> [u8; 3] {
+pub(crate) fn hsv(h: f32, s: f32, v: f32) -> [u8; 3] {
     let h = h.rem_euclid(1.0) * 6.0;
     let f = h.fract();
     let (p, q, t) = (v * (1.0 - s), v * (1.0 - s * f), v * (1.0 - s * (1.0 - f)));
@@ -220,10 +220,10 @@ fn hsv(h: f32, s: f32, v: f32) -> [u8; 3] {
     [r, g, b].map(|c| (c * 255.0).round() as u8)
 }
 
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -231,15 +231,15 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.next() % n.max(1)
     }
 
-    fn unit(&mut self) -> f32 {
+    pub(crate) fn unit(&mut self) -> f32 {
         (self.next() >> 40) as f32 / (1u64 << 24) as f32
     }
 
-    fn chance(&mut self, p: f32) -> bool {
+    pub(crate) fn chance(&mut self, p: f32) -> bool {
         self.unit() < p
     }
 }

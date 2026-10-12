@@ -19,6 +19,7 @@ use slot_ui::{
 use crate::app::{App, LinkRow, Phase};
 use crate::build_info::Build;
 use crate::cart_faces::CartFaces;
+use crate::dry::{self, Dry};
 use crate::dust::{self, Dust};
 use crate::face_builder::FaceBuilder;
 use crate::label_cache::{self, Rebuild};
@@ -352,6 +353,9 @@ impl Frontend {
         if let Some(g) = self.session.app().glitch() {
             dust::glitch(&mut self.glitch, g.platform, g.seed, g.at, g.puff);
             compositor.upload_game(&self.glitch);
+        } else if let Some(bench) = self.session.app().bench() {
+            dry::paint(&mut self.glitch, bench);
+            compositor.upload_game(&self.glitch);
         } else if let Some(frame) = self.session.frame() {
             compositor.upload_game(&frame);
             crate::latency::taken();
@@ -416,6 +420,10 @@ impl Frontend {
 
     pub fn set_dust(&mut self, dust: Dust) {
         self.session.app_mut().set_dust(dust);
+    }
+
+    pub fn set_dry(&mut self, dry: Dry) {
+        self.session.app_mut().set_dry(dry);
     }
 
     pub fn drive_emulator(&mut self) {
