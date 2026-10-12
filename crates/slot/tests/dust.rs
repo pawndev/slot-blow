@@ -62,10 +62,10 @@ fn a_dusty_cart_stops_on_a_glitched_screen() {
 }
 
 #[test]
-fn about_one_cart_in_five_is_dusty() {
+fn about_one_cart_in_ten_is_dusty() {
     let mut dust = Dust::seeded(42);
     let duds = (0..10_000).filter(|_| dust.roll().is_some()).count();
-    assert!((1_700..2_300).contains(&duds), "{duds} duds in 10000");
+    assert!((800..1_200).contains(&duds), "{duds} duds in 10000");
 }
 
 #[test]
