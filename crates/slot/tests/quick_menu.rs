@@ -7,8 +7,8 @@ use common::{
 use slot::app::{App, Phase};
 use slot_input::{Action, Btn};
 use slot_store::{
-    read_slot_state, write_slot_state, Appearance, BezelPick, Platform, Shader, SlotState,
-    WallpaperPick,
+    read_slot_state, write_play_time, write_slot_state, Appearance, BezelPick, Platform, Shader,
+    SlotState, WallpaperPick,
 };
 use slot_ui::{
     Draw, Icon, QuickMenuFaces, QuickRow, QuickValue, TexId, HINT_EDGE, MENU_PAD, MOUTH_H, OUT_H,
@@ -1245,4 +1245,55 @@ fn a_frame_file_that_is_gone_reads_back_as_none() {
         ..SlotState::default()
     });
     assert_eq!(a.resolved_bezel(Platform::Gb), BezelPick::None);
+}
+
+#[test]
+fn label_wear_flips_on_either_arrow_and_saves() {
+    let (d, mut a, _) = on_carousel();
+    open_at(&mut a, QuickRow::LabelWear);
+    assert_eq!(a.quick_value(QuickRow::LabelWear), Some(QuickValue::On));
+    for (btn, want) in [(Btn::Right, false), (Btn::Left, true), (Btn::Left, false)] {
+        press(&mut a, btn);
+        assert_eq!(
+            read_slot_state(d.path()).label_wear,
+            want,
+            "{btn:?} never reached the card"
+        );
+        assert_eq!(
+            a.quick_value(QuickRow::LabelWear),
+            Some(QuickValue::flag(want))
+        );
+    }
+}
+
+#[test]
+fn turning_label_wear_off_asks_again_for_every_worn_face() {
+    let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    write_play_time(d.path(), "Emerald", 20 * 3600).unwrap();
+    write_slot_state(
+        d.path(),
+        &SlotState {
+            clock_set: true,
+            ..SlotState::default()
+        },
+    )
+    .unwrap();
+    let (mut a, _) = app_booting_at(d.path(), CLOCK_IS_SET);
+    assert!(a.cart_wear("Emerald") > 0.0);
+    assert_eq!(a.cart_wear("Fusion"), 0.0);
+
+    open_at(&mut a, QuickRow::LabelWear);
+    press(&mut a, Btn::Right);
+    assert_eq!(a.cart_wear("Emerald"), 0.0, "the setting left the wear on");
+    let worn = a.take_worn();
+    let stems: Vec<&str> = worn
+        .iter()
+        .filter_map(|(shelf, i)| a.face_cart(*shelf, *i))
+        .map(|c| c.stem.as_str())
+        .collect();
+    assert_eq!(stems, ["Emerald"], "only the worn cart needs a new face");
+
+    press(&mut a, Btn::Right);
+    assert!(a.cart_wear("Emerald") > 0.0);
+    assert_eq!(a.take_worn().len(), 1);
 }
