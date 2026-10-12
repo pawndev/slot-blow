@@ -17,6 +17,7 @@ pub mod crash {
     pub fn install() {}
 }
 pub mod drc;
+pub mod dust;
 pub mod emu;
 pub mod face_builder;
 pub mod frames;

@@ -367,6 +367,10 @@ impl Session {
         matches!(self.app.phase(), Phase::Inserting { .. })
     }
 
+    fn dud(&self) -> bool {
+        matches!(self.app.phase(), Phase::Dud { .. })
+    }
+
     fn showing_polaroids(&self) -> bool {
         matches!(self.app.phase(), Phase::Polaroids { .. })
     }
@@ -398,6 +402,7 @@ impl Session {
             emu.set_runahead(self.app.runahead_in_play());
             emu.set_speed(
                 if self.inserting()
+                    || self.dud()
                     || self.ejecting()
                     || self.showing_polaroids()
                     || self.dozing()

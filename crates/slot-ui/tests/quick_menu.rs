@@ -132,7 +132,8 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Run-Ahead",
             "Turbo Buttons",
             "Rumble",
-            "Auto Save on Eject"
+            "Auto Save on Eject",
+            "Dusty Carts"
         ]
     );
     let opens: Vec<QuickRow> = QuickRow::ALL.into_iter().filter(|r| r.opens()).collect();
