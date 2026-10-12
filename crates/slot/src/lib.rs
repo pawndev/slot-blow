@@ -17,6 +17,7 @@ pub mod crash {
     pub fn install() {}
 }
 pub mod drc;
+pub mod dry;
 pub mod dust;
 pub mod emu;
 pub mod face_builder;
@@ -34,6 +35,7 @@ pub mod link_start;
 pub mod link_state;
 pub mod panel_turn;
 pub mod persist;
+pub mod pixel_font;
 pub mod prefetch;
 pub mod resample;
 pub mod rewind;
