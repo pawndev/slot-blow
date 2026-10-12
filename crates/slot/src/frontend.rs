@@ -46,10 +46,10 @@ pub struct Frontend {
     rebuild_faces: RebuildFaces,
     link_art: LinkArtBuilder,
     link_art_done: bool,
-    core_asked: Option<String>,
+    core_asked: Option<WornStem>,
     core_board_tex: Option<TexId>,
     core_lid_tex: Option<TexId>,
-    core_built: Option<String>,
+    core_built: Option<WornStem>,
     undo_tex: Option<TexId>,
     switcher: Switcher,
     clocks: Clocks,
@@ -766,25 +766,27 @@ fn sync_core_picker(
     app: &mut App,
     compositor: &mut Compositor,
     builder: &FaceBuilder,
-    asked: &mut Option<String>,
+    asked: &mut Option<WornStem>,
     board: &mut Option<TexId>,
     lid: &mut Option<TexId>,
-    built: &mut Option<String>,
+    built: &mut Option<WornStem>,
 ) {
-    let highlighted = app.selected_stem().map(str::to_string);
-    if highlighted.is_some() && *asked != highlighted {
-        if let Some(cart) = app
-            .carts()
-            .find(|c| highlighted.as_deref() == Some(c.stem.as_str()))
-        {
-            builder.request(cart.clone());
+    let highlighted = app
+        .selected_stem()
+        .map(|stem| (stem.to_string(), app.cart_wear(stem).to_bits()));
+    if let Some((stem, wear)) = &highlighted {
+        if *asked != highlighted {
+            if let Some(cart) = app.carts().find(|c| c.stem == *stem) {
+                builder.request(cart.clone(), f32::from_bits(*wear));
+            }
+            *asked = highlighted.clone();
         }
-        *asked = highlighted.clone();
     }
     let Some(faces) = builder.take() else {
         return;
     };
-    if highlighted.as_deref() != Some(faces.stem.as_str()) || *built == highlighted {
+    let got = Some((faces.stem.clone(), faces.wear.to_bits()));
+    if highlighted != got || *built == got {
         return;
     }
     let board_id = upload_rgba(
@@ -796,8 +798,10 @@ fn sync_core_picker(
     );
     let lid_id = upload_rgba(compositor, lid, faces.lid.w, faces.lid.h, &faces.lid.rgba);
     app.set_core_board_faces(board_id, lid_id);
-    *built = Some(faces.stem);
+    *built = got;
 }
+
+type WornStem = (String, u32);
 
 fn upload(compositor: &mut Compositor, slot: &mut Option<TexId>, face: slot_ui::UndoFace) -> TexId {
     upload_rgba(compositor, slot, face.w, face.h, &face.rgba)

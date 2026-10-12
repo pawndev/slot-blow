@@ -6,7 +6,7 @@ use std::thread;
 
 use slot_gfx::{Compositor, TexId};
 use slot_store::Cart;
-use slot_ui::{cart_face_with, CartFace};
+use slot_ui::{cart_face_worn, CartFace};
 
 use crate::app::{App, FaceWant};
 use crate::label_cache::label_art;
@@ -17,7 +17,7 @@ type Key = (usize, usize);
 
 #[derive(Default)]
 struct Queue {
-    jobs: VecDeque<(Key, Cart)>,
+    jobs: VecDeque<(Key, Cart, f32)>,
     closed: bool,
 }
 
@@ -28,6 +28,7 @@ pub struct CartFaces {
     built: Receiver<(Key, CartFace)>,
     pending: HashSet<Key>,
     asked: Vec<FaceWant>,
+    worn: Vec<Key>,
     free: Vec<TexId>,
 }
 
@@ -49,6 +50,7 @@ impl CartFaces {
             built,
             pending: HashSet::new(),
             asked: Vec::new(),
+            worn: Vec::new(),
             free: Vec::new(),
         }
     }
@@ -59,7 +61,9 @@ impl CartFaces {
             self.place(app, compositor, key, face);
         }
         let wants = app.face_wants();
-        if wants != self.asked {
+        let worn = app.take_worn();
+        if wants != self.asked || !worn.is_empty() {
+            self.worn.extend(worn);
             self.requeue(app, &wants);
             self.asked = wants;
         }
@@ -81,16 +85,18 @@ impl CartFaces {
     fn requeue(&mut self, app: &App, wants: &[FaceWant]) {
         let (lock, wake) = &*self.queue;
         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
-        for (key, _) in queue.jobs.drain(..) {
+        for (key, _, _) in queue.jobs.drain(..) {
             self.pending.remove(&key);
         }
-        for w in wants {
-            let key = (w.shelf, w.index);
+        let keys = wants.iter().map(|w| (w.shelf, w.index));
+        for key in keys.chain(self.worn.iter().copied()) {
             if self.pending.contains(&key) {
                 continue;
             }
-            if let Some(cart) = app.face_cart(w.shelf, w.index) {
-                queue.jobs.push_back((key, cart.clone()));
+            if let Some(cart) = app.face_cart(key.0, key.1) {
+                queue
+                    .jobs
+                    .push_back((key, cart.clone(), app.cart_wear(&cart.stem)));
                 self.pending.insert(key);
             }
         }
@@ -100,6 +106,7 @@ impl CartFaces {
     fn place(&mut self, app: &mut App, compositor: &mut Compositor, key: Key, face: CartFace) {
         self.pending.remove(&key);
         self.asked.retain(|w| (w.shelf, w.index) != key);
+        self.worn.retain(|k| *k != key);
         let tex = match self.free.pop() {
             Some(tex) => {
                 compositor.update_texture(tex, face.w, face.h, &face.rgba);
@@ -122,7 +129,7 @@ impl Drop for CartFaces {
 fn work(queue: &Shared, outbox: &Sender<(Key, CartFace)>, root: &Path) {
     let (lock, wake) = &**queue;
     loop {
-        let (key, cart) = {
+        let (key, cart, wear) = {
             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if q.closed {
@@ -134,7 +141,7 @@ fn work(queue: &Shared, outbox: &Sender<(Key, CartFace)>, root: &Path) {
                 q = wake.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
-        let face = cart_face_with(&cart, label_art(root, &cart));
+        let face = cart_face_worn(&cart, label_art(root, &cart), wear);
         if outbox.send((key, face)).is_err() {
             return;
         }

@@ -8,6 +8,7 @@ use crate::silhouette::{
     GbShell,
 };
 use crate::text;
+use crate::wear;
 
 pub const CART_W: u32 = 360;
 pub const CART_H: u32 = (CART_W * SEATED_H + SEATED_W / 2) / SEATED_W;
@@ -194,13 +195,19 @@ pub fn label_size(cart: &Cart) -> (u32, u32) {
 }
 
 pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
+    cart_face_worn(cart, art, 0.0)
+}
+
+pub fn cart_face_worn(cart: &Cart, art: Option<Vec<u8>>, worn: f32) -> CartFace {
     let s = spec(shape_of(cart));
     let shell = shell_for(cart);
     let mut face = shell_face(&s, &shell);
-    let label = match art {
+    let mut label = match art {
         Some(rgba) => rgba,
         None => generated_label(&s, &label_text(cart)),
     };
+    let (_, _, lw, lh) = s.label;
+    wear::wear_label(&mut label, lw, lh, worn, wear::wear_seed(&cart.stem));
     mould_detail(&s, &mut face);
     recess_label(&s, &mut face, &shell);
     paste_label(&s, &mut face, &label);
