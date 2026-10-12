@@ -2,7 +2,7 @@ use slot_gfx::{SRC_H, SRC_W};
 use slot_input::Millis;
 use slot_store::Platform;
 
-pub const ODDS: u64 = 5;
+pub const ODDS: u64 = 10;
 
 pub const PUFF_TAP: f32 = 0.16;
 pub const PUFF_HOLD_S: f32 = 0.45;
