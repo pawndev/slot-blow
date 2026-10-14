@@ -9,16 +9,16 @@ use slot_power::{Battery, Charge, LedState, LidPolicy, Power};
 use slot_retro::LinkChannel;
 use slot_store::{
     format_stamp, read_slot_state, scan, write_slot_state, Cart, Core, GbPalette, Platform, Shader,
-    SlotState, StateEntry, StateRing, Theme, BLUE_LIGHT_MAX, BRIGHTNESS_MAX, FF_SPEEDS, RING_MAX,
-    RUN_AHEAD_MAX, VOLUME_MAX,
+    SlotState, StateEntry, StateRing, Theme, WallpaperPick, BLUE_LIGHT_MAX, BRIGHTNESS_MAX,
+    FF_SPEEDS, RING_MAX, RUN_AHEAD_MAX, VOLUME_MAX,
 };
 use slot_ui::{
-    board_from, board_zoom, draw_backdrop, draw_empty_slot, draw_footer, draw_slot_name,
-    draw_sticker, ease, grown, lid_at, lid_from, lift_of, on_board, shelf_cart_at, ClockPicker,
-    Draw, FfState, GbShell, Hud, HudKind, Icon, LinkBadge, Millis, Placed, Polaroids, PowerChoice,
-    QuickMenu, QuickMenuFaces, QuickRow, QuickValue, Refusal, Shelf, SlotChrome, TexId, Toast,
-    BOARD_W, BOARD_X, CART_W, CHIP_H, CHIP_U, CHIP_V, CHIP_W, HINT_EDGE, HINT_H, HOP_LIFT,
-    SHADOW_H, SHADOW_W, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
+    board_from, board_zoom, draw_empty_slot, draw_footer, draw_ground, draw_slot_name,
+    draw_sticker, ease, footer_ink, grown, lid_at, lid_from, lift_of, on_board, shelf_cart_at,
+    ClockPicker, Draw, FfState, GbShell, Hud, HudKind, Icon, LinkBadge, Millis, Placed, Polaroids,
+    PowerChoice, QuickMenu, QuickMenuFaces, QuickRow, QuickValue, Refusal, Shelf, SlotChrome,
+    TexId, Toast, BOARD_W, BOARD_X, CART_W, CHIP_H, CHIP_U, CHIP_V, CHIP_W, FOOTER_Y, HINT_EDGE,
+    HINT_H, HOP_LIFT, SHADOW_H, SHADOW_W, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 
 use crate::audio::Sfx;
@@ -87,15 +87,17 @@ const CORE_PICKER_RECEDE: f32 = 0.26;
 const SLOT_NAME_IN_MS: Millis = 200;
 const SLOT_NAME_HOLD_MS: Millis = 1200;
 const SLOT_NAME_OUT_MS: Millis = 800;
-const SLOT_NAME_ALPHA: f32 = 0.4;
-const CORE_PICKER_DIM: f32 = 0.614;
+const SLOT_NAME_ALPHA: f32 = 1.0;
+const CORE_PICKER_DIM: f32 = 0.25 / (1.0 - CORE_PICKER_RECEDE);
 const CORE_LEGEND_Y: f32 = 386.0;
 const LINK_TEXT_Y: f32 = 44.0;
-const LINK_LEGEND_Y: f32 = 422.0;
+const LINK_LEGEND_Y: f32 = FOOTER_Y;
+pub const LINK_SCRIM: [f32; 4] = [0.0, 0.0, 0.0, 0.5];
 const LINK_LEGEND_GAP: f32 = 40.0;
+const LINK_LEGEND_EDGE: f32 = 24.0;
 const LID_SHADOW_W: f32 = 168.0;
 const LID_SHADOW_H: f32 = 18.0;
-const LID_SHADOW_DROP: f32 = 29.0;
+const LID_SHADOW_DROP: f32 = 27.1;
 const LID_SHADOW_ALPHA: f32 = 0.8;
 const FACES_WAIT_MS: Millis = 1500;
 
@@ -285,8 +287,9 @@ pub enum Phase {
 
 pub struct App {
     phase: Phase,
-    shelves: Vec<(Platform, Shelf)>,
+    shelves: Vec<(Option<Platform>, Shelf)>,
     shelf_at: usize,
+    orphaned: Vec<TexId>,
     play_held: Option<Millis>,
     refusal: Option<Refusal>,
     refused_from: Option<f32>,
@@ -296,6 +299,7 @@ pub struct App {
     power_menu_faces: Vec<(TexId, u32, u32)>,
     core_picker: Option<CorePicker>,
     core_board_face: Option<TexId>,
+    core_interior_face: Option<TexId>,
     core_lid_face: Option<TexId>,
     core_faces_stem: Option<String>,
     core_socket_faces: Vec<TexId>,
@@ -305,6 +309,7 @@ pub struct App {
     core_legend_faces: Vec<(TexId, u32)>,
     game_menu: Option<GameMenu>,
     link_sprites: Option<LinkSprites>,
+    link_shot: Option<TexId>,
     link_hardware: LinkKind,
     last_role: LinkRow,
     link_choices: HashMap<String, LinkKind>,
@@ -341,10 +346,14 @@ pub struct App {
     clock_faces: Option<(TexId, TexId)>,
     quick_menu_faces: Option<QuickMenuFaces>,
     quick_clock_faces: Option<[(TexId, u32, u32); 2]>,
+    quick_wallpaper_faces: Option<[(TexId, u32, u32); 2]>,
     sticker_face: Option<TexId>,
+    ground: Option<TexId>,
+    blur: Option<TexId>,
     wallpaper: Option<TexId>,
     battery_percent: slot_ui::Printed,
     bolt: Option<TexId>,
+    slot_faces: Option<(TexId, TexId)>,
     shelf_platform: slot_ui::Printed,
     name_pending: bool,
     slot_letter: Option<char>,
@@ -387,11 +396,13 @@ pub struct FaceWant {
     pub on_screen: bool,
 }
 
-fn shelves_of(carts: Vec<Cart>) -> Vec<(Platform, Shelf)> {
-    let mut rows: Vec<(Platform, Vec<Cart>)> =
-        Platform::ALL.iter().map(|p| (*p, Vec::new())).collect();
+fn shelves_of(carts: Vec<Cart>) -> Vec<(Option<Platform>, Shelf)> {
+    let mut rows: Vec<(Option<Platform>, Vec<Cart>)> = std::iter::once(None)
+        .chain(Platform::ALL.iter().map(|p| Some(*p)))
+        .map(|p| (p, Vec::new()))
+        .collect();
     for cart in carts {
-        if let Some((_, row)) = rows.iter_mut().find(|(p, _)| *p == cart.platform) {
+        if let Some((_, row)) = rows.iter_mut().find(|(p, _)| *p == Some(cart.platform)) {
             row.push(cart);
         }
     }
@@ -415,6 +426,7 @@ impl App {
             phase: Phase::Shelf,
             shelves,
             shelf_at,
+            orphaned: Vec::new(),
             play_held: None,
             refusal: None,
             refused_from: None,
@@ -424,6 +436,7 @@ impl App {
             power_menu_faces: Vec::new(),
             core_picker: None,
             core_board_face: None,
+            core_interior_face: None,
             core_lid_face: None,
             core_faces_stem: None,
             core_socket_faces: Vec::new(),
@@ -433,6 +446,7 @@ impl App {
             core_legend_faces: Vec::new(),
             game_menu: None,
             link_sprites: None,
+            link_shot: None,
             link_hardware: LinkKind::Cable,
             last_role: LinkRow::Host,
             link_choices: HashMap::new(),
@@ -469,10 +483,14 @@ impl App {
             clock_faces: None,
             quick_menu_faces: None,
             quick_clock_faces: None,
+            quick_wallpaper_faces: None,
             sticker_face: None,
+            ground: None,
+            blur: None,
             wallpaper: None,
             battery_percent: slot_ui::Printed::default(),
             bolt: None,
+            slot_faces: None,
             shelf_platform: slot_ui::Printed::default(),
             name_pending: false,
             slot_letter: None,
@@ -513,6 +531,10 @@ impl App {
         let mut app = App::new(carts);
         app.root = Some(root.to_path_buf());
         app.state = read_slot_state(root);
+        app.restock_recents();
+        if !app.shelves[0].1.carts.is_empty() {
+            app.shelf_at = 0;
+        }
         if app.state.clock_set {
             app.start();
         } else {
@@ -620,7 +642,7 @@ impl App {
         self.shelves
             .iter()
             .enumerate()
-            .filter(|(_, (p, _))| platform.is_none_or(|want| *p == want))
+            .filter(|(_, (p, _))| platform.is_none_or(|want| p.is_none_or(|p| p == want)))
             .find_map(|(at, (_, shelf))| {
                 shelf
                     .carts
@@ -696,7 +718,18 @@ impl App {
             QuickRow::Dusty => Some(QuickValue::flag(self.state.dusty)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
             QuickRow::RunAhead => QuickValue::frames(self.state.runahead),
-            QuickRow::DateTime | QuickRow::About | QuickRow::Screen | QuickRow::Game => None,
+            QuickRow::Recents => Some(QuickValue::flag(self.state.show_recents)),
+            QuickRow::Theme => Some(if self.light() {
+                QuickValue::Light
+            } else {
+                QuickValue::Dark
+            }),
+            QuickRow::DateTime
+            | QuickRow::About
+            | QuickRow::Screen
+            | QuickRow::Game
+            | QuickRow::General
+            | QuickRow::Wallpaper => None,
         }
     }
 
@@ -706,6 +739,55 @@ impl App {
 
     pub fn set_quick_clock_faces(&mut self, dim: (TexId, u32, u32), lit: (TexId, u32, u32)) {
         self.quick_clock_faces = Some([dim, lit]);
+    }
+
+    pub fn set_quick_wallpaper_faces(&mut self, dim: (TexId, u32, u32), lit: (TexId, u32, u32)) {
+        self.quick_wallpaper_faces = Some([dim, lit]);
+    }
+
+    pub fn wallpaper_files(&self) -> Vec<String> {
+        self.root().map(crate::wallpaper::list).unwrap_or_default()
+    }
+
+    pub fn wallpaper(&self) -> WallpaperPick {
+        self.state.wallpaper.clone()
+    }
+
+    pub fn resolved_wallpaper(&self) -> WallpaperPick {
+        match &self.state.wallpaper {
+            WallpaperPick::File(name) if !self.wallpaper_files().iter().any(|n| n == name) => {
+                WallpaperPick::Default
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn cycle_wallpaper(&mut self, right: bool) {
+        let mut choices = vec![
+            WallpaperPick::None,
+            WallpaperPick::Default,
+            WallpaperPick::Blur,
+        ];
+        choices.extend(self.wallpaper_files().into_iter().map(WallpaperPick::File));
+        let key = self.resolved_wallpaper().key();
+        let at = choices.iter().position(|c| c.key() == key).unwrap_or(1);
+        let n = choices.len();
+        let next = if right {
+            (at + 1) % n
+        } else {
+            (at + n - 1) % n
+        };
+        self.state.wallpaper = choices[next].clone();
+    }
+
+    fn draw_background(&self, out: &mut Vec<Draw>) {
+        let face = match &self.state.wallpaper {
+            WallpaperPick::None => None,
+            WallpaperPick::Default => self.ground,
+            WallpaperPick::Blur => self.blur.or(self.ground),
+            WallpaperPick::File(_) => self.wallpaper.or(self.ground),
+        };
+        draw_ground(face, out);
     }
 
     pub fn set_sticker_face(&mut self, face: TexId) {
@@ -729,12 +811,37 @@ impl App {
         }
     }
 
+    pub fn set_cart_backing(&mut self, face: TexId) {
+        for (_, shelf) in &mut self.shelves {
+            shelf.set_backing(face);
+        }
+    }
+
+    pub fn set_gb_cart_backings(&mut self, notched: TexId, rounded: TexId) {
+        for (_, shelf) in &mut self.shelves {
+            shelf.set_gb_backing(GbShell::Notched, notched);
+            shelf.set_gb_backing(GbShell::Rounded, rounded);
+        }
+    }
+
+    pub fn set_ground(&mut self, face: TexId) {
+        self.ground = Some(face);
+    }
+
+    pub fn set_blur(&mut self, face: TexId) {
+        self.blur = Some(face);
+    }
+
     pub fn set_wallpaper(&mut self, face: TexId) {
         self.wallpaper = Some(face);
     }
 
     pub fn set_bolt_face(&mut self, bolt: TexId) {
         self.bolt = Some(bolt);
+    }
+
+    pub fn set_slot_faces(&mut self, back: TexId, front: TexId) {
+        self.slot_faces = Some((back, front));
     }
 
     pub fn set_shelf_platform_face(&mut self, face: TexId, w: u32) {
@@ -754,7 +861,11 @@ impl App {
 
     pub fn shelf_platform_name(&self) -> Option<&'static str> {
         self.next_shelf(1)?;
-        Some(self.shelves[self.shelf_at].0.name())
+        Some(
+            self.shelves[self.shelf_at]
+                .0
+                .map_or("Recents", Platform::name),
+        )
     }
 
     pub fn set_battery_percent_face(&mut self, face: TexId, w: u32) {
@@ -772,6 +883,7 @@ impl App {
     pub fn carts(&self) -> impl Iterator<Item = &Cart> {
         self.shelves
             .iter()
+            .filter(|(p, _)| p.is_some())
             .flat_map(|(_, shelf)| shelf.carts.iter())
     }
 
@@ -832,9 +944,13 @@ impl App {
         self.shelves.get_mut(shelf)?.1.set_face(index, tex)
     }
 
+    pub fn set_cart_interior(&mut self, shelf: usize, index: usize, tex: TexId) -> Option<TexId> {
+        self.shelves.get_mut(shelf)?.1.set_interior(index, tex)
+    }
+
     pub fn shed_faces(&mut self) -> Vec<TexId> {
         let neighbours = self.neighbour_shelves();
-        let mut shed = Vec::new();
+        let mut shed = std::mem::take(&mut self.orphaned);
         for (at, (_, shelf)) in self.shelves.iter_mut().enumerate() {
             let keep = if at == self.shelf_at {
                 shelf.around(FACE_KEEP)
@@ -846,6 +962,7 @@ impl App {
             for i in 0..shelf.carts.len() {
                 if !keep.contains(&i) {
                     shed.extend(shelf.take_face(i));
+                    shed.extend(shelf.take_interior(i));
                 }
             }
         }
@@ -1094,6 +1211,10 @@ impl App {
 
     pub fn colour_correction(&self) -> bool {
         self.state.colour_correction
+    }
+
+    pub fn light(&self) -> bool {
+        self.state.appearance.light()
     }
 
     pub fn powering_off(&self) -> bool {
@@ -1389,7 +1510,7 @@ impl App {
                 self.phase = clock_screen(self.utc_secs(), self.state.utc_offset_min, true);
             }
             QuickRow::About => self.phase = Phase::About,
-            QuickRow::Screen | QuickRow::Game => {
+            QuickRow::Screen | QuickRow::Game | QuickRow::General => {
                 if let Some(row) = row.child() {
                     self.phase = Phase::QuickMenu { row };
                 }
@@ -1405,11 +1526,25 @@ impl App {
             | QuickRow::GbPalettes
             | QuickRow::RunAhead
             | QuickRow::Dusty
-            | QuickRow::Rumble => {}
+            | QuickRow::Rumble
+            | QuickRow::Theme
+            | QuickRow::Recents
+            | QuickRow::Wallpaper => {}
         }
     }
 
     fn change_setting(&mut self, row: QuickRow, right: bool) {
+        if row == QuickRow::Wallpaper {
+            self.cycle_wallpaper(right);
+            self.persist();
+            return;
+        }
+        if row == QuickRow::Recents {
+            self.state.show_recents = !self.state.show_recents;
+            self.restock_recents();
+            self.persist();
+            return;
+        }
         let s = &mut self.state;
         match row {
             QuickRow::FastForward => {
@@ -1448,7 +1583,14 @@ impl App {
                 let n = RUN_AHEAD_MAX + 1;
                 s.runahead = (s.runahead + if right { 1 } else { n - 1 }) % n;
             }
-            QuickRow::DateTime | QuickRow::About | QuickRow::Screen | QuickRow::Game => return,
+            QuickRow::Theme => s.appearance = s.appearance.toggle(),
+            QuickRow::Wallpaper
+            | QuickRow::Recents
+            | QuickRow::DateTime
+            | QuickRow::About
+            | QuickRow::Screen
+            | QuickRow::Game
+            | QuickRow::General => return,
         }
         self.persist();
     }
@@ -1953,8 +2095,48 @@ impl App {
         }
     }
 
+    fn restock_recents(&mut self) {
+        let carts: Vec<Cart> = match self.state.show_recents {
+            true => self
+                .state
+                .recents
+                .iter()
+                .filter_map(|r| {
+                    self.carts()
+                        .find(|c| c.platform == r.platform && c.stem == r.stem)
+                })
+                .cloned()
+                .collect(),
+            false => Vec::new(),
+        };
+        let stocked = &self.shelves[0].1.carts;
+        if stocked.len() == carts.len()
+            && stocked
+                .iter()
+                .zip(&carts)
+                .all(|(a, b)| a.platform == b.platform && a.stem == b.stem)
+        {
+            return;
+        }
+        let old = self.shelves[0].1.restock(carts);
+        self.orphaned.extend(old);
+        let empty = self.shelves[0].1.carts.is_empty();
+        if self.shelf_at == 0 && empty {
+            self.shelf_at = self.next_shelf(1).unwrap_or(0);
+        }
+    }
+
     fn record_cart(&mut self, cart: Option<String>) {
         let platform = self.seated_cart().map(|c| c.platform);
+        if let (Some(stem), Some(platform)) = (&cart, platform) {
+            let first = self.state.recents.first();
+            if first.is_none_or(|r| r.platform != platform || r.stem != *stem) {
+                let stem = stem.clone();
+                self.state.played(platform, &stem);
+                self.restock_recents();
+                self.persist();
+            }
+        }
         if self.state.cart == cart && self.state.cart_platform == platform {
             return;
         }
@@ -2113,21 +2295,22 @@ impl App {
                 row: *row,
                 values: QuickRow::ALL.map(|r| self.quick_value(r)),
                 clock: self.quick_clock_faces,
+                wallpaper: self.quick_wallpaper_faces,
                 faces: self.quick_menu_faces.as_ref(),
             }
             .draw(out),
             Phase::Shelf => {
-                draw_backdrop(self.wallpaper, out);
+                self.draw_background(out);
                 match (self.core_picker_shown(), self.selected_stem()) {
                     (Some(picker), Some(stem)) => {
                         let open = ease(picker.openness(self.now()));
                         let dim = 1.0 + (CORE_PICKER_DIM - 1.0) * open;
                         self.shelf()
                             .draw_row(Some(stem), 0.0, CORE_PICKER_RECEDE * open, dim, out);
-                        draw_empty_slot(out);
+                        draw_empty_slot(self.slot_faces, out);
                     }
                     _ => {
-                        self.shelf().draw(self.shelf_shake(), out);
+                        self.shelf().draw(self.shelf_shake(), self.slot_faces, out);
                         draw_slot_name(self.shelf_platform, self.slot_name_alpha(), out);
                     }
                 }
@@ -2136,34 +2319,41 @@ impl App {
                     self.battery_percent,
                     self.bolt,
                     self.shelf_clock,
+                    footer_ink(self.light()),
                     out,
                 );
             }
             Phase::About => {
-                draw_backdrop(self.wallpaper, out);
+                self.draw_background(out);
                 draw_sticker(self.sticker_face, out);
                 return;
             }
             Phase::Inserting { cart, resumed, .. } => {
                 if !resumed {
-                    draw_backdrop(self.wallpaper, out);
+                    self.draw_background(out);
                     self.shelf()
                         .draw_row(Some(cart), 0.0, self.seat(), 1.0, out);
                 }
-                self.chrome(cart, self.seat(), out);
+                self.chrome(cart, 0.0, out);
             }
             Phase::Ejecting { cart, .. } => {
-                draw_backdrop(self.wallpaper, out);
+                self.draw_background(out);
                 self.shelf()
                     .draw_row(Some(cart), 0.0, self.seat(), 1.0, out);
-                self.chrome(cart, self.seat(), out);
+                self.chrome(cart, 0.0, out);
             }
-            Phase::Dud { cart, .. } if self.screen < 1.0 => self.chrome(cart, 0.0, out),
+            Phase::Playing { cart } if self.screen < 1.0 => {
+                self.draw_background(out);
+                self.chrome(cart, 0.0, out);
+            }
+            Phase::Dud { cart, .. } if self.screen < 1.0 => {
+                self.draw_background(out);
+                self.chrome(cart, 0.0, out);
+            }
             Phase::Dud { since, puff, .. } => {
                 out.push(Draw::Game);
                 self.draw_blow(*since, *puff, out);
             }
-            Phase::Playing { cart } if self.screen < 1.0 => self.chrome(cart, 0.0, out),
             Phase::Playing { .. } => self.push_game(out),
             Phase::Polaroids { .. } => {
                 self.push_game(out);
@@ -2238,6 +2428,15 @@ impl App {
             dim,
             screen: self.screen,
             game: self.game_ready || matches!(self.phase, Phase::Dud { .. }),
+            over: !matches!(
+                &self.phase,
+                Phase::Inserting { resumed: true, .. }
+                    | Phase::Playing { .. }
+                    | Phase::Dud { .. }
+                    | Phase::Ejecting { .. }
+            ),
+            behind: self.shelf().behind(stem),
+            slot: self.slot_faces,
         }
         .draw(out);
     }
@@ -2268,6 +2467,10 @@ impl App {
 
     pub fn set_power_menu_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
         self.power_menu_faces = faces;
+    }
+
+    pub fn set_core_interior_face(&mut self, interior: TexId) {
+        self.core_interior_face = Some(interior);
     }
 
     pub fn set_core_board_faces(&mut self, board: TexId, lid: TexId) {
@@ -2317,6 +2520,16 @@ impl App {
         self.link_sprites = Some(sprites);
     }
 
+    pub fn set_link_shot(&mut self, tex: Option<TexId>) {
+        self.link_shot = tex;
+    }
+
+    pub fn set_link_port(&mut self, tex: TexId) {
+        if let Some(sprites) = &mut self.link_sprites {
+            sprites.port.tex = tex;
+        }
+    }
+
     pub fn link_sprites_ready(&self) -> bool {
         self.link_sprites.is_some()
     }
@@ -2352,6 +2565,16 @@ impl App {
         let ready = self.core_faces_ready();
 
         if ready {
+            if let Some(tex) = self.core_interior_face {
+                out.push(Draw::Tex {
+                    x: board.x,
+                    y: board.y,
+                    w: board.w,
+                    h: board.h,
+                    tex,
+                    alpha: 1.0,
+                });
+            }
             if let Some(tex) = self.core_board_face {
                 out.push(Draw::Tex {
                     x: board.x,
@@ -2480,12 +2703,22 @@ impl App {
     }
 
     fn draw_game_menu(&self, menu: GameMenu, out: &mut Vec<Draw>) {
+        if let Some(tex) = self.link_shot {
+            out.push(Draw::Tex {
+                x: 0.0,
+                y: 0.0,
+                w: OUT_W as f32,
+                h: OUT_H as f32,
+                tex,
+                alpha: 1.0,
+            });
+        }
         out.push(Draw::Rect {
             x: 0.0,
             y: 0.0,
             w: OUT_W as f32,
             h: OUT_H as f32,
-            colour: slot_ui::opening(),
+            colour: LINK_SCRIM,
         });
         if let Some(sprites) = &self.link_sprites {
             crate::link_screen::draw_link_art(menu, self.link_hardware, self.now(), sprites, out);
@@ -2513,28 +2746,40 @@ impl App {
             });
         }
         let switchable = self.seated().is_some_and(|stem| self.link_switchable(stem));
-        let keys: &[LinkLegend] = match menu {
-            GameMenu::Pick(_) if switchable => &[
-                LinkLegend::Cancel,
-                LinkLegend::Mode,
-                LinkLegend::Swap,
-                LinkLegend::Link,
-            ],
-            GameMenu::Pick(_) => &[LinkLegend::Cancel, LinkLegend::Swap, LinkLegend::Link],
-            GameMenu::Working { .. } => &[LinkLegend::Cancel],
-            GameMenu::Linked { opened: true, .. } => &[LinkLegend::Back, LinkLegend::EndLink],
-            GameMenu::Linked { .. } => &[],
-            GameMenu::Failed { .. } => &[LinkLegend::Ok],
-            GameMenu::Unplug { .. } => &[],
+        // Cancel and Mode stay on the left of the footer, Swap and Link on the right, so the
+        // socket in the middle of the strip stays clear.
+        let (left, right): (&[LinkLegend], &[LinkLegend]) = match menu {
+            GameMenu::Pick(_) if switchable => (
+                &[LinkLegend::Cancel, LinkLegend::Mode],
+                &[LinkLegend::Swap, LinkLegend::Link],
+            ),
+            GameMenu::Pick(_) => (&[LinkLegend::Cancel], &[LinkLegend::Swap, LinkLegend::Link]),
+            GameMenu::Working { .. } => (&[LinkLegend::Cancel], &[]),
+            GameMenu::Linked { opened: true, .. } => (&[LinkLegend::Back], &[LinkLegend::EndLink]),
+            GameMenu::Linked { .. } => (&[], &[]),
+            GameMenu::Failed { .. } => (&[], &[LinkLegend::Ok]),
+            GameMenu::Unplug { .. } => (&[], &[]),
         };
+        self.draw_link_keys(left, false, out);
+        self.draw_link_keys(right, true, out);
+    }
+
+    fn draw_link_keys(&self, keys: &[LinkLegend], right: bool, out: &mut Vec<Draw>) {
         let faces: Vec<(TexId, u32)> = keys
             .iter()
             .filter_map(|k| self.link_legend_faces.get(k.index()).copied())
             .collect();
+        if faces.is_empty() {
+            return;
+        }
         let seen = |w: u32| w.saturating_sub(HINT_EDGE) as f32;
-        let total: f32 = faces.iter().map(|(_, w)| seen(*w)).sum::<f32>()
+        let total = faces.iter().map(|(_, w)| seen(*w)).sum::<f32>()
             + LINK_LEGEND_GAP * faces.len().saturating_sub(1) as f32;
-        let mut x = ((OUT_W as f32 - total) / 2.0).round();
+        let mut x = if right {
+            (OUT_W as f32 - LINK_LEGEND_EDGE - total).round()
+        } else {
+            LINK_LEGEND_EDGE
+        };
         for (tex, w) in faces {
             out.push(Draw::Tex {
                 x,
@@ -2544,7 +2789,7 @@ impl App {
                 tex,
                 alpha: 1.0,
             });
-            x += (seen(w) + LINK_LEGEND_GAP).round();
+            x += seen(w) + LINK_LEGEND_GAP;
         }
     }
 

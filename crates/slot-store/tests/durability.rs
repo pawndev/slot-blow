@@ -2,8 +2,8 @@ mod common;
 
 use common::tmp_root;
 use slot_store::{
-    atomic_write, read_slot_state, write_slot_state, GbPalette, Platform, Shader, SlotState,
-    FF_SPEEDS, FF_SPEED_DEFAULT,
+    atomic_write, read_slot_state, write_slot_state, Appearance, GbPalette, Platform, Shader,
+    SlotState, WallpaperPick, FF_SPEEDS, FF_SPEED_DEFAULT,
 };
 use tempfile::tempdir;
 
@@ -204,6 +204,10 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
             dusty: true,
+            appearance: Appearance::Dark,
+            wallpaper: WallpaperPick::Default,
+            show_recents: false,
+            recents: Vec::new(),
         }
     );
 }
@@ -245,6 +249,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "gb_palettes=1",
         "gb_palette=GBC Dark Green →A",
         "dusty=0",
+        "appearance=dark",
     ] {
         assert!(text.lines().any(|l| l == line), "no {line} in {text:?}");
     }

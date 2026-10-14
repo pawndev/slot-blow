@@ -17,6 +17,91 @@ pub const FF_SPEED_DEFAULT: u8 = 6;
 
 pub const RUN_AHEAD_MAX: u8 = 1;
 
+pub const RECENTS_MAX: usize = 10;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Recent {
+    pub platform: Platform,
+    pub stem: String,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum Appearance {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl Appearance {
+    pub fn light(self) -> bool {
+        matches!(self, Appearance::Light)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Appearance::Dark => "dark",
+            Appearance::Light => "light",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Appearance> {
+        match name {
+            "dark" => Some(Appearance::Dark),
+            "light" => Some(Appearance::Light),
+            _ => None,
+        }
+    }
+
+    pub fn toggle(self) -> Appearance {
+        match self {
+            Appearance::Dark => Appearance::Light,
+            Appearance::Light => Appearance::Dark,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub enum WallpaperPick {
+    None,
+    #[default]
+    Default,
+    Blur,
+    File(String),
+}
+
+impl WallpaperPick {
+    pub fn key(&self) -> String {
+        match self {
+            WallpaperPick::None => "none".to_string(),
+            WallpaperPick::Default => "default".to_string(),
+            WallpaperPick::Blur => "default_blur".to_string(),
+            WallpaperPick::File(name) => name.clone(),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            WallpaperPick::None => "None".to_string(),
+            WallpaperPick::Default => "Default".to_string(),
+            WallpaperPick::Blur => "DEFAULT BLUR".to_string(),
+            WallpaperPick::File(name) => name
+                .rsplit_once('.')
+                .map(|(stem, _)| stem)
+                .unwrap_or(name)
+                .to_string(),
+        }
+    }
+
+    pub fn parse(value: &str) -> WallpaperPick {
+        match value {
+            "none" => WallpaperPick::None,
+            "" | "default" => WallpaperPick::Default,
+            "default_blur" => WallpaperPick::Blur,
+            other => WallpaperPick::File(other.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SlotState {
     pub cart: Option<String>,
@@ -42,6 +127,25 @@ pub struct SlotState {
     pub gb_palettes: bool,
     pub gb_palette: GbPalette,
     pub dusty: bool,
+    pub appearance: Appearance,
+    pub wallpaper: WallpaperPick,
+    pub show_recents: bool,
+    pub recents: Vec<Recent>,
+}
+
+impl SlotState {
+    pub fn played(&mut self, platform: Platform, stem: &str) {
+        self.recents
+            .retain(|r| !(r.platform == platform && r.stem == stem));
+        self.recents.insert(
+            0,
+            Recent {
+                platform,
+                stem: stem.to_string(),
+            },
+        );
+        self.recents.truncate(RECENTS_MAX);
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -116,6 +220,10 @@ impl Default for SlotState {
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
             dusty: true,
+            appearance: Appearance::Dark,
+            wallpaper: WallpaperPick::Default,
+            show_recents: false,
+            recents: Vec::new(),
         }
     }
 }
@@ -133,8 +241,8 @@ pub fn read_slot_state(root: &Path) -> SlotState {
 }
 
 pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
-    let text = format!(
-        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\nrunahead={}\ngb_palettes={}\ngb_palette={}\ndusty={}\n",
+    let mut text = format!(
+        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\nrunahead={}\ngb_palettes={}\ngb_palette={}\ndusty={}\nappearance={}\nwallpaper={}\n",
         s.cart.as_deref().unwrap_or(""),
         s.cart_platform.map_or(String::new(), platform_key),
         s.brightness,
@@ -157,8 +265,14 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.runahead,
         s.gb_palettes as u8,
         s.gb_palette.core_name(),
-        s.dusty as u8
+        s.dusty as u8,
+        s.appearance.name(),
+        s.wallpaper.key()
     );
+    text.push_str(&format!("show_recents={}\n", s.show_recents as u8));
+    for r in &s.recents {
+        text.push_str(&format!("recent={}/{}\n", platform_key(r.platform), r.stem));
+    }
     atomic_write(&state_path(root), text.as_bytes())
 }
 
@@ -186,6 +300,10 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut gb_palettes = None;
     let mut gb_palette = None;
     let mut dusty = None;
+    let mut appearance = None;
+    let mut wallpaper = None;
+    let mut show_recents = None;
+    let mut recents: Vec<Recent> = Vec::new();
     for line in text.lines().filter(|l| !l.is_empty()) {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -213,6 +331,10 @@ fn parse(text: &str) -> Option<SlotState> {
             "gb_palettes" => gb_palettes = flag(value),
             "gb_palette" => gb_palette = GbPalette::parse(value),
             "dusty" => dusty = flag(value),
+            "appearance" => appearance = Appearance::parse(value),
+            "wallpaper" => wallpaper = Some(WallpaperPick::parse(value)),
+            "show_recents" => show_recents = flag(value),
+            "recent" => recents.extend(recent_value(value)),
             "shader_gb" => shader_gb = Shader::parse(value).filter(|s| Shader::GB.contains(s)),
             _ => {}
         }
@@ -243,11 +365,24 @@ fn parse(text: &str) -> Option<SlotState> {
         gb_palettes: gb_palettes.unwrap_or(fallback.gb_palettes),
         gb_palette: gb_palette.unwrap_or(fallback.gb_palette),
         dusty: dusty.unwrap_or(fallback.dusty),
+        appearance: appearance.unwrap_or(fallback.appearance),
+        wallpaper: wallpaper.unwrap_or(fallback.wallpaper),
+        show_recents: show_recents.unwrap_or(fallback.show_recents),
+        recents: recents.into_iter().take(RECENTS_MAX).collect(),
     })
 }
 
 fn platform_key(platform: Platform) -> String {
     platform.dir_name().to_ascii_lowercase()
+}
+
+fn recent_value(value: &str) -> Option<Recent> {
+    let (platform, stem) = value.split_once('/')?;
+    Some(Recent {
+        platform: platform_value(platform)?,
+        stem: stem.to_string(),
+    })
+    .filter(|r| !r.stem.is_empty())
 }
 
 fn platform_value(value: &str) -> Option<Platform> {
