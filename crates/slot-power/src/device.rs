@@ -1,6 +1,8 @@
+#[cfg(unix)]
 use std::ffi::{c_int, c_ulong, c_void};
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,6 +63,7 @@ pub fn trace_first_frame() {
 
 const EV_FF: u16 = 0x15;
 const FF_RUMBLE: u16 = 0x50;
+#[cfg(unix)]
 const EVIOCSFF: c_ulong = 0x4030_4580;
 
 const DISPDBG_MAX: u32 = 255;
@@ -219,6 +222,7 @@ struct Motor {
     running: bool,
 }
 
+#[cfg(unix)]
 #[repr(C)]
 #[derive(Default)]
 struct FfTrigger {
@@ -226,6 +230,7 @@ struct FfTrigger {
     interval: u16,
 }
 
+#[cfg(unix)]
 #[repr(C)]
 #[derive(Default)]
 struct FfReplay {
@@ -233,6 +238,7 @@ struct FfReplay {
     delay: u16,
 }
 
+#[cfg(unix)]
 #[repr(C)]
 #[derive(Default)]
 struct FfRumble {
@@ -240,6 +246,7 @@ struct FfRumble {
     weak: u16,
 }
 
+#[cfg(unix)]
 #[repr(C)]
 struct FfEffect {
     kind: u16,
@@ -261,32 +268,41 @@ struct FfEvent {
     value: i32,
 }
 
+#[cfg(unix)]
 extern "C" {
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
 }
 
 fn upload(node: &fs::File, id: i16) -> Option<i16> {
-    let mut effect = FfEffect {
-        kind: FF_RUMBLE,
-        id,
-        direction: 0,
-        trigger: FfTrigger::default(),
-        replay: FfReplay::default(),
-        _align: 0,
-        rumble: FfRumble {
-            strong: u16::MAX,
-            weak: u16::MAX,
-        },
-        _tail: [0; 28],
-    };
-    let rc = unsafe {
-        ioctl(
-            node.as_raw_fd(),
-            EVIOCSFF,
-            &mut effect as *mut FfEffect as *mut c_void,
-        )
-    };
-    (rc >= 0).then_some(effect.id)
+    #[cfg(not(unix))]
+    {
+        let _ = (node, id);
+        None
+    }
+    #[cfg(unix)]
+    {
+        let mut effect = FfEffect {
+            kind: FF_RUMBLE,
+            id,
+            direction: 0,
+            trigger: FfTrigger::default(),
+            replay: FfReplay::default(),
+            _align: 0,
+            rumble: FfRumble {
+                strong: u16::MAX,
+                weak: u16::MAX,
+            },
+            _tail: [0; 28],
+        };
+        let rc = unsafe {
+            ioctl(
+                node.as_raw_fd(),
+                EVIOCSFF,
+                &mut effect as *mut FfEffect as *mut c_void,
+            )
+        };
+        (rc >= 0).then_some(effect.id)
+    }
 }
 
 impl Motor {

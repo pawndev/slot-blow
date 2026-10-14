@@ -23,10 +23,14 @@ pub enum QuickRow {
     RunAhead,
     Dusty,
     Dry,
+    Theme,
+    Wallpaper,
+    General,
+    Recents,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 17] = [
+    pub const ALL: [QuickRow; 21] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -44,13 +48,24 @@ impl QuickRow {
         QuickRow::RunAhead,
         QuickRow::Dusty,
         QuickRow::Dry,
+        QuickRow::Theme,
+        QuickRow::Wallpaper,
+        QuickRow::General,
+        QuickRow::Recents,
     ];
 
     pub const MAIN: [QuickRow; 4] = [
         QuickRow::Screen,
         QuickRow::Game,
-        QuickRow::DateTime,
+        QuickRow::General,
         QuickRow::About,
+    ];
+
+    pub const GENERAL: [QuickRow; 4] = [
+        QuickRow::Wallpaper,
+        QuickRow::DateTime,
+        QuickRow::Theme,
+        QuickRow::Recents,
     ];
 
     pub const SCREEN: [QuickRow; 4] = [
@@ -91,6 +106,9 @@ impl QuickRow {
             | QuickRow::EjectSave
             | QuickRow::Dusty
             | QuickRow::Dry => &QuickRow::GAME,
+            QuickRow::Wallpaper | QuickRow::DateTime | QuickRow::Theme | QuickRow::Recents => {
+                &QuickRow::GENERAL
+            }
             _ => &QuickRow::MAIN,
         }
     }
@@ -99,6 +117,7 @@ impl QuickRow {
         match self.page()[0] {
             QuickRow::GbaShader => Some(QuickRow::Screen),
             QuickRow::FastForward => Some(QuickRow::Game),
+            QuickRow::Wallpaper => Some(QuickRow::General),
             _ => None,
         }
     }
@@ -107,6 +126,7 @@ impl QuickRow {
         match self {
             QuickRow::Screen => Some(QuickRow::SCREEN[0]),
             QuickRow::Game => Some(QuickRow::GAME[0]),
+            QuickRow::General => Some(QuickRow::GENERAL[0]),
             _ => None,
         }
     }
@@ -134,13 +154,21 @@ impl QuickRow {
             QuickRow::RunAhead => "Run-Ahead",
             QuickRow::Dusty => "Dusty Carts",
             QuickRow::Dry => "Dry Batteries",
+            QuickRow::Theme => "Theme",
+            QuickRow::Wallpaper => "Wallpaper",
+            QuickRow::General => "General",
+            QuickRow::Recents => "Recents",
         }
     }
 
     pub fn opens(self) -> bool {
         matches!(
             self,
-            QuickRow::DateTime | QuickRow::About | QuickRow::Screen | QuickRow::Game
+            QuickRow::DateTime
+                | QuickRow::About
+                | QuickRow::Screen
+                | QuickRow::Game
+                | QuickRow::General
         )
     }
 
@@ -168,10 +196,12 @@ pub enum QuickValue {
     Dot,
     Simpletex,
     Frames1,
+    Dark,
+    Light,
 }
 
 impl QuickValue {
-    pub const ALL: [QuickValue; 11] = [
+    pub const ALL: [QuickValue; 13] = [
         QuickValue::Speed2,
         QuickValue::Speed3,
         QuickValue::Speed4,
@@ -183,6 +213,8 @@ impl QuickValue {
         QuickValue::Dot,
         QuickValue::Simpletex,
         QuickValue::Frames1,
+        QuickValue::Dark,
+        QuickValue::Light,
     ];
 
     pub fn index(self) -> usize {
@@ -202,6 +234,8 @@ impl QuickValue {
             QuickValue::Dot => "Dot",
             QuickValue::Simpletex => "Simpletex",
             QuickValue::Frames1 => "1 Frame",
+            QuickValue::Dark => "Dark",
+            QuickValue::Light => "Light",
         }
     }
 
@@ -233,7 +267,7 @@ impl QuickValue {
 }
 
 pub const QUICK_PITCH: f32 = 52.0;
-pub const QUICK_TOP: f32 = (OUT_H as f32 - QUICK_PITCH * QuickRow::MAIN.len() as f32) / 2.0;
+pub const QUICK_TOP: f32 = 56.0;
 pub const QUICK_EDGE: f32 = 32.0;
 const BAR_INSET: f32 = 4.0;
 const TYPE_DROP: f32 = 4.0;
@@ -324,6 +358,7 @@ pub struct QuickMenu<'a> {
     pub row: QuickRow,
     pub values: [Option<QuickValue>; QuickRow::ALL.len()],
     pub clock: Option<[(TexId, u32, u32); 2]>,
+    pub wallpaper: Option<[(TexId, u32, u32); 2]>,
     pub faces: Option<&'a QuickMenuFaces>,
 }
 
@@ -355,6 +390,7 @@ impl QuickMenu<'_> {
             }
             let value = match row {
                 QuickRow::DateTime => self.clock.map(|c| c[lit as usize]),
+                QuickRow::Wallpaper => self.wallpaper.map(|c| c[lit as usize]),
                 _ => self.values[row.index()]
                     .and_then(|v| faces.values.get(v.index()))
                     .map(|v| v[lit as usize]),
@@ -382,8 +418,7 @@ impl QuickMenu<'_> {
 }
 
 fn row_top(row: QuickRow) -> f32 {
-    let top = (OUT_H as f32 - QUICK_PITCH * row.page().len() as f32) / 2.0;
-    top + QUICK_PITCH * row.position() as f32
+    QUICK_TOP + QUICK_PITCH * row.position() as f32
 }
 
 fn push(out: &mut Vec<Draw>, tex: TexId, x: f32, y: f32, w: u32, h: u32) {
