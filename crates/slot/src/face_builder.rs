@@ -2,11 +2,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use slot_store::Cart;
-use slot_ui::{board_face, cart_face_worn, cover, label_size, padded, CartFace, TURN_PAD};
+use slot_ui::{
+    board_face, cart_face_worn, cart_interior, cover, gb_shell_of, label_size, padded, CartFace,
+    TURN_PAD,
+};
 
 pub struct BuiltFaces {
     pub stem: String,
     pub wear: f32,
+    pub interior: CartFace,
     pub board: CartFace,
     pub lid: CartFace,
 }
@@ -33,6 +37,15 @@ impl FaceBuilder {
                     let faces = BuiltFaces {
                         stem: cart.stem.clone(),
                         wear,
+                        interior: if gb_shell_of(&cart).is_none() {
+                            cart_interior(&cart)
+                        } else {
+                            CartFace {
+                                rgba: vec![0; 4],
+                                w: 1,
+                                h: 1,
+                            }
+                        },
                         board: board_face(&cart),
                         lid: padded(&cart_face_worn(&cart, art, wear), TURN_PAD),
                     };
