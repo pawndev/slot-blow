@@ -47,10 +47,11 @@ pub enum QuickRow {
     GbaBezel,
     ScreenGbc,
     ScreenGb,
+    Experimental,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 41] = [
+    pub const ALL: [QuickRow; 42] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -92,6 +93,7 @@ impl QuickRow {
         QuickRow::GbaBezel,
         QuickRow::ScreenGbc,
         QuickRow::ScreenGb,
+        QuickRow::Experimental,
     ];
 
     pub const MAIN: [QuickRow; 4] = [
@@ -140,8 +142,10 @@ impl QuickRow {
         QuickRow::Turbo,
         QuickRow::Rumble,
         QuickRow::EjectSave,
-        QuickRow::Dusty,
+        QuickRow::Experimental,
     ];
+
+    pub const EXPERIMENTAL: [QuickRow; 1] = [QuickRow::Dusty];
 
     pub const PLAY: [QuickRow; 4] = [
         QuickRow::Resume,
@@ -183,7 +187,8 @@ impl QuickRow {
             | QuickRow::Turbo
             | QuickRow::Rumble
             | QuickRow::EjectSave
-            | QuickRow::Dusty => &QuickRow::GAME,
+            | QuickRow::Experimental => &QuickRow::GAME,
+            QuickRow::Dusty => &QuickRow::EXPERIMENTAL,
             QuickRow::Wallpaper
             | QuickRow::WallpaperTint
             | QuickRow::DateTime
@@ -208,6 +213,7 @@ impl QuickRow {
             QuickRow::GbcShader => Some(QuickRow::ScreenGbc),
             QuickRow::GbShader => Some(QuickRow::ScreenGb),
             QuickRow::FastForward => Some(QuickRow::Game),
+            QuickRow::Dusty => Some(QuickRow::Experimental),
             QuickRow::Wallpaper => Some(QuickRow::General),
             QuickRow::PlayScreen => Some(QuickRow::Settings),
             QuickRow::Shader => Some(QuickRow::PlayScreen),
@@ -243,6 +249,7 @@ impl QuickRow {
             QuickRow::ScreenGba => Some(QuickRow::SCREEN_GBA[0]),
             QuickRow::ScreenGbc => Some(QuickRow::SCREEN_GBC[0]),
             QuickRow::ScreenGb => Some(QuickRow::SCREEN_GB[0]),
+            QuickRow::Experimental => Some(QuickRow::EXPERIMENTAL[0]),
             _ => None,
         }
     }
@@ -305,6 +312,7 @@ impl QuickRow {
             QuickRow::GbcBezel => "Bezel",
             QuickRow::GbaBezel => "Bezel",
             QuickRow::Bezel => "Bezel",
+            QuickRow::Experimental => "Experimental",
         }
     }
 
@@ -325,6 +333,7 @@ impl QuickRow {
                 | QuickRow::ScreenGba
                 | QuickRow::ScreenGbc
                 | QuickRow::ScreenGb
+                | QuickRow::Experimental
         )
     }
 
