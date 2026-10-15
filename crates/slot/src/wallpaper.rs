@@ -2,7 +2,11 @@ use std::path::{Path, PathBuf};
 
 pub fn list(root: &Path) -> Vec<String> {
     let mut files = pngs(&root.join("Wallpapers"));
-    files.sort();
+    files.sort_by(|a, b| {
+        a.to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b))
+    });
     files
 }
 

@@ -6,7 +6,7 @@ use common::{tmp_root_with_carts, write_gb_cart, StubSnapshot};
 use slot::app::{App, Phase};
 use slot_input::{Action, Btn};
 use slot_store::{read_slot_state, write_slot_state, Platform, Recent, SlotState};
-use slot_ui::QuickRow;
+use slot_ui::{QuickRow, QuickValue};
 use tempfile::TempDir;
 
 fn card() -> TempDir {
@@ -73,15 +73,25 @@ fn press(a: &mut App, btn: Btn) {
 
 fn flip_recents(a: &mut App) {
     a.apply(Action::QuickMenu);
-    for _ in 0..QuickRow::General.position() {
+    for _ in 0..QuickRow::General.position(&[]) {
         press(a, Btn::Down);
     }
     press(a, Btn::A);
-    for _ in 0..QuickRow::Recents.position() {
+    for _ in 0..QuickRow::Recents.position(a.hidden_rows()) {
         press(a, Btn::Down);
     }
     assert_eq!(a.quick_menu(), Some(QuickRow::Recents));
+    let was = a.quick_value(QuickRow::Recents);
     press(a, Btn::Right);
+    let now = a.quick_value(QuickRow::Recents);
+    assert!(
+        matches!(
+            (was, now),
+            (Some(QuickValue::Hide), Some(QuickValue::Show))
+                | (Some(QuickValue::Show), Some(QuickValue::Hide))
+        ),
+        "{was:?} then {now:?}"
+    );
     while a.quick_menu().is_some() {
         press(a, Btn::B);
     }

@@ -85,12 +85,26 @@ pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
         Platform::Gb | Platform::Gbc => Some(match cart.shell.map(|c| c.outline) {
             Some(Outline::Notched) => GbShell::Notched,
             Some(Outline::Rounded) => GbShell::Rounded,
-            _ => match slot_store::gb::class(&cart.rom) {
+            _ => match slot_store::gb::cached_class(&cart.rom) {
                 Class::ColourOnly => GbShell::Rounded,
                 Class::Original | Class::DualMode => GbShell::Notched,
             },
         }),
     }
+}
+
+pub fn label_rect(shell: Option<GbShell>) -> (f32, f32, f32, f32) {
+    let s = spec(match shell {
+        None => Shape::Gba,
+        Some(shell) => Shape::Gb(shell),
+    });
+    let (x, y, w, h) = s.label;
+    (
+        x as f32 / s.w as f32,
+        y as f32 / s.h as f32,
+        w as f32 / s.w as f32,
+        h as f32 / s.h as f32,
+    )
 }
 
 fn shape_of(cart: &Cart) -> Shape {
