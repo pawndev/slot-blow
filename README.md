@@ -54,27 +54,22 @@ Release notes can be found in the [changelog](CHANGELOG.md).
 If you have one of the untested devices, or have tried slot on a device not listed,
 please [open an issue on GitHub](https://github.com/BrandonKowalski/slot/issues) and let me know how it went.
 
-## RG28XX Users
-RG28XX support was contributed by [GamerAnim](https://github.com/GamerAnim). The RG28XX has its panel mounted in a
-portrait orientation. slot turns the picture to fit it, but on some units it comes out upside down.
-If yours does, open `System/launch_frontend.sh` on the SD card and add `export SLOT_ROTATE=ccw` just
-above the last line:
-
-```sh
-export SLOT_ROTATE=ccw
-exec /lib/ld-linux-aarch64.so.1 "$SYS/slot" > "$SD/slot.log" 2>&1
-```
-
 ---
 
 # AI Disclosure
 
-The Rust frontend was put together by Claude Opus. I reviewed everything that was
-produced. All documentation is 100% free-range, meatbag prose.
+The Rust frontend, and the SVGs on [slot-cfw.fyi](https://slot-cfw.fyi), were put together by Claude.
+I reviewed everything that was produced. All documentation is 100% free-range, meatbag prose.
 
-The project is extremely low stakes. I wanted a bespoke frontend for my RG SP and thought
-that something that evokes the feeling of using my GBA SP as a kid would be pretty neat.
+My goal with this project was to recreate the feeling of playing my GBA SP in the back seat as a kid,
+but with a few modern creature comforts.
 
-Use it, don't use it, I don't care.
+Nothing about this project is exciting or groundbreaking from a technological perspective, and as a
+result, I delegated the glue code. mGBA and gpSP have been around forever and are the true stars of
+this show. The incredible skeuomorphic art is the work of [Markus](https://github.com/MarkusMaribu), an
+artist who saw the bare-bones version and offered to dress it up.
+
+I understand if my use of AI is a dealbreaker for you. Just know it's the least interesting part of
+what's here.
 
 Figured I should share the end result of all the wasted water. ✌🏻

@@ -1,29 +1,17 @@
-use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
-use slot_store::Cart;
-use std::sync::atomic::{AtomicU32, Ordering};
+use slot_gfx::{Canvas, Draw, TexId, OUT_H};
+use slot_store::{Cart, Platform};
+use std::sync::OnceLock;
 
 use crate::board::{board_in, Placed};
-use crate::cart::{cart_box, gb_shell_of, is_clear, label_colour, label_text, CART_H, CART_W};
+use crate::cart::{
+    cart_box, gb_shell_of, is_clear, label_colour, label_rect, label_text, CART_H, CART_W,
+};
 use crate::hud::Millis;
 use crate::silhouette::GbShell;
 use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
 
 const SIDE_SCALE: f32 = 0.78;
 const SIDE_ALPHA: f32 = 1.0;
-
-static SLACK: AtomicU32 = AtomicU32::new(0);
-
-pub fn set_shelf_slack(px: f32) {
-    SLACK.store(px.max(0.0).to_bits(), Ordering::Relaxed);
-}
-
-fn raise() -> f32 {
-    f32::from_bits(SLACK.load(Ordering::Relaxed)) / 2.0
-}
-
-pub fn panel_middle_y() -> f32 {
-    OUT_H as f32 / 2.0 + raise()
-}
 
 pub fn rest_y(h: f32) -> f32 {
     let y = if h > CART_H as f32 {
@@ -33,7 +21,7 @@ pub fn rest_y(h: f32) -> f32 {
     };
     // A Game Boy pak is 337px in a 422px gap, which centres at 42.5. Snap to a
     // whole pixel so the 312×337 bitmap hits the RG SP panel 1:1.
-    (y - raise()).round()
+    y.round()
 }
 
 pub fn foot_y(h: f32) -> f32 {
@@ -44,8 +32,16 @@ const PART: f32 = 130.0;
 
 const SLOTS: i32 = 3;
 
-const REPEAT_DELAY_MS: Millis = 400;
+pub const REPEAT_DELAY_MS: Millis = 400;
+
+pub const STAR_SCALE: u32 = 2;
+pub const STAR_INK: [u8; 3] = [0xf6, 0xc3, 0x2c];
+const STAR_INSET: f32 = 5.0;
 const REPEAT_MS: [Millis; 4] = [110, 85, 65, 50];
+
+pub fn repeat_gap(fired: usize) -> Millis {
+    REPEAT_MS[fired.min(REPEAT_MS.len() - 1)]
+}
 
 pub struct Shelf {
     pub carts: Vec<Cart>,
@@ -59,8 +55,10 @@ pub struct Shelf {
     backing: Option<TexId>,
     gb_backing: Option<TexId>,
     gbc_backing: Option<TexId>,
-    shells: Vec<Option<GbShell>>,
-    clears: Vec<bool>,
+    shells: Vec<OnceLock<Option<GbShell>>>,
+    clears: Vec<OnceLock<bool>>,
+    starred: Vec<bool>,
+    star: Option<(TexId, f32, f32)>,
     ride: f32,
     vel: f32,
     held: Option<(i32, Millis, usize)>,
@@ -69,10 +67,12 @@ pub struct Shelf {
 impl Shelf {
     pub fn new(carts: Vec<Cart>) -> Self {
         Shelf {
-            shells: carts.iter().map(gb_shell_of).collect(),
-            clears: carts.iter().map(is_clear).collect(),
+            shells: carts.iter().map(|_| OnceLock::new()).collect(),
+            clears: carts.iter().map(|_| OnceLock::new()).collect(),
             faces: vec![None; carts.len()],
             interiors: vec![None; carts.len()],
+            starred: vec![false; carts.len()],
+            star: None,
             carts,
             index: 0,
             scroll: 0.0,
@@ -88,6 +88,20 @@ impl Shelf {
         }
     }
 
+    fn shell(&self, i: usize) -> Option<GbShell> {
+        let (Some(cell), Some(cart)) = (self.shells.get(i), self.carts.get(i)) else {
+            return None;
+        };
+        *cell.get_or_init(|| gb_shell_of(cart))
+    }
+
+    fn clear(&self, i: usize) -> bool {
+        let (Some(cell), Some(cart)) = (self.clears.get(i), self.carts.get(i)) else {
+            return false;
+        };
+        *cell.get_or_init(|| is_clear(cart))
+    }
+
     pub fn restock(&mut self, carts: Vec<Cart>) -> Vec<TexId> {
         let old: Vec<TexId> = self
             .faces
@@ -95,10 +109,11 @@ impl Shelf {
             .chain(self.interiors.drain(..))
             .flatten()
             .collect();
-        self.shells = carts.iter().map(gb_shell_of).collect();
-        self.clears = carts.iter().map(is_clear).collect();
+        self.shells = carts.iter().map(|_| OnceLock::new()).collect();
+        self.clears = carts.iter().map(|_| OnceLock::new()).collect();
         self.faces = vec![None; carts.len()];
         self.interiors = vec![None; carts.len()];
+        self.starred = vec![false; carts.len()];
         self.carts = carts;
         self.held = None;
         self.select(0);
@@ -110,6 +125,14 @@ impl Shelf {
         self.scroll = i as f32;
         self.ride = i as f32;
         self.vel = 0.0;
+    }
+
+    pub fn set_star(&mut self, face: TexId, w: u32, h: u32) {
+        self.star = Some((face, w as f32, h as f32));
+    }
+
+    pub fn mark_starred(&mut self, starred: impl Fn(&Cart) -> bool) {
+        self.starred = self.carts.iter().map(starred).collect();
     }
 
     pub fn set_shadow(&mut self, face: TexId) {
@@ -186,10 +209,10 @@ impl Shelf {
         let Some(i) = self.carts.iter().position(|c| c.stem == stem) else {
             return [None, None];
         };
-        if !self.clears.get(i).copied().unwrap_or(false) || self.face(i).is_none() {
+        if !self.clear(i) || self.face(i).is_none() {
             return [None, None];
         }
-        let board = match self.shells.get(i).copied().flatten() {
+        let board = match self.shell(i) {
             None => self.backing,
             Some(GbShell::Notched) => self.gb_backing,
             Some(GbShell::Rounded) => self.gbc_backing,
@@ -313,8 +336,7 @@ impl Shelf {
             return;
         }
         self.step(by);
-        let rate = REPEAT_MS[fired.min(REPEAT_MS.len() - 1)];
-        self.held = Some((by, now + rate, fired + 1));
+        self.held = Some((by, now + repeat_gap(fired), fired + 1));
     }
 
     fn step(&mut self, by: i32) {
@@ -347,14 +369,40 @@ impl Shelf {
         Some((self.index as i32 + off).rem_euclid(n) as usize)
     }
 
-    pub fn selected_at(&self) -> (f32, f32) {
-        let w = self
-            .carts
-            .get(self.index)
-            .map_or(CART_W, |c| cart_box(c.platform).0) as f32;
-        let offset = self.scroll_target() - self.scroll;
-        let scale = shrink(offset);
-        (OUT_W as f32 / 2.0 + offset * w - w * scale / 2.0, scale)
+    pub fn selected_at(&self, canvas: Canvas) -> (f32, f32) {
+        let (w, _) = self.slot_width(0);
+        let scale = shrink(self.scroll_target() - self.scroll);
+        (self.centre(canvas, 0) - w * scale / 2.0, scale)
+    }
+
+    fn slot_width(&self, slot: i32) -> (f32, bool) {
+        match self.cart_at_offset(slot).map(|i| self.carts[i].platform) {
+            Some(Platform::Gba) | None => (CART_W as f32, true),
+            Some(p) => (cart_box(p).0 as f32, false),
+        }
+    }
+
+    fn pitch(&self, a: i32, u: f32) -> f32 {
+        let ((wa, gba_a), (wb, gba_b)) = (self.slot_width(a), self.slot_width(a + 1));
+        let (sa, sb) = (shrink(a as f32 - u), shrink((a + 1) as f32 - u));
+        let gap_of = if gba_a || gba_b { CART_W as f32 } else { wa };
+        wa * sa / 2.0 + gap_of * (1.0 - (sa + sb) / 2.0) + wb * sb / 2.0
+    }
+
+    fn centre(&self, canvas: Canvas, slot: i32) -> f32 {
+        let u = self.scroll - self.scroll_target();
+        let a = u.floor() as i32;
+        let mut c = canvas.w / 2.0 - (u - a as f32) * self.pitch(a, u);
+        if slot >= a {
+            for s in a..slot {
+                c += self.pitch(s, u);
+            }
+        } else {
+            for s in (slot..a).rev() {
+                c -= self.pitch(s, u);
+            }
+        }
+        c
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -363,13 +411,20 @@ impl Shelf {
         self.scroll += self.vel * dt;
     }
 
-    pub fn draw(&self, shake: f32, slot: Option<(TexId, TexId)>, out: &mut Vec<Draw>) {
-        self.draw_row(None, shake, 0.0, 1.0, out);
-        draw_empty_slot(slot, out);
+    pub fn draw(
+        &self,
+        canvas: Canvas,
+        shake: f32,
+        slot: Option<(TexId, TexId)>,
+        out: &mut Vec<Draw>,
+    ) {
+        self.draw_row(canvas, None, shake, 0.0, 1.0, out);
+        draw_empty_slot(canvas, slot, out);
     }
 
     pub fn draw_row(
         &self,
+        canvas: Canvas,
         hidden: Option<&str>,
         shake: f32,
         recede: f32,
@@ -394,14 +449,14 @@ impl Shelf {
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
-            let x = OUT_W as f32 / 2.0 + offset * cw as f32 - w / 2.0 + away * PART * recede;
-            if x + w <= 0.0 || x >= OUT_W as f32 || alpha <= 0.0 {
+            let x = self.centre(canvas, slot) - w / 2.0 + away * PART * recede;
+            if x + w <= 0.0 || x >= canvas.w || alpha <= 0.0 {
                 continue;
             }
             let x = x + shake;
             let y = foot_y(ch as f32) - h;
             if alpha < 1.0 {
-                let backing = match self.shells.get(i).copied().flatten() {
+                let backing = match self.shell(i) {
                     None => self.shadow,
                     Some(GbShell::Notched) => self.gb_shadow,
                     Some(GbShell::Rounded) => self.gbc_shadow,
@@ -417,13 +472,13 @@ impl Shelf {
                     });
                 }
             }
-            if self.clears.get(i).copied().unwrap_or(false) && self.face(i).is_some() {
-                let board = match self.shells.get(i).copied().flatten() {
+            if self.clear(i) && self.face(i).is_some() {
+                let board = match self.shell(i) {
                     None => self.backing,
                     Some(GbShell::Notched) => self.gb_backing,
                     Some(GbShell::Rounded) => self.gbc_backing,
                 };
-                let gba = self.shells.get(i).copied().flatten().is_none();
+                let gba = self.shell(i).is_none();
                 // A GBA cart's board and back shell fill the cart's box, exactly where the
                 // picker lifts them from; a Game Boy pak's backing fills its box.
                 let Placed {
@@ -483,6 +538,17 @@ impl Shelf {
                     }
                 }
             });
+            if let (Some(true), Some((tex, sw, sh))) = (self.starred.get(i), self.star) {
+                let (lx, ly, lw, _) = label_rect(self.shell(i));
+                out.push(Draw::Tex {
+                    x: (x + (lx + lw) * w - sw - STAR_INSET).round(),
+                    y: (y + ly * h + STAR_INSET).round(),
+                    w: sw,
+                    h: sh,
+                    tex,
+                    alpha: alpha * dim,
+                });
+            }
         }
     }
 }

@@ -74,6 +74,7 @@ fn turning_dusty_carts_off_in_the_menu_stops_the_glitch() {
     a.set_dust(Dust::always(1));
     a.apply(Action::QuickMenu);
     a.apply(Action::GbaDown(Btn::Down));
+    a.apply(Action::GbaDown(Btn::Down));
     a.apply(Action::GbaDown(Btn::A));
     a.apply(Action::GbaDown(Btn::Up));
     a.apply(Action::GbaDown(Btn::Up));
