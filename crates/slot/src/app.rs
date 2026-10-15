@@ -977,7 +977,8 @@ impl App {
             | QuickRow::GbBezel
             | QuickRow::GbcBezel
             | QuickRow::GbaBezel
-            | QuickRow::Bezel => None,
+            | QuickRow::Bezel
+            | QuickRow::Experimental => None,
         }
     }
 
@@ -2081,7 +2082,8 @@ impl App {
             | QuickRow::General
             | QuickRow::ScreenGba
             | QuickRow::ScreenGbc
-            | QuickRow::ScreenGb => {
+            | QuickRow::ScreenGb
+            | QuickRow::Experimental => {
                 if let Some(row) = row.child() {
                     let row = row.shown(self.hidden_rows())[0];
                     self.phase = Phase::QuickMenu { row };
@@ -2241,7 +2243,8 @@ impl App {
             | QuickRow::GbBezel
             | QuickRow::GbcBezel
             | QuickRow::GbaBezel
-            | QuickRow::Bezel => return,
+            | QuickRow::Bezel
+            | QuickRow::Experimental => return,
         }
         self.persist();
     }
