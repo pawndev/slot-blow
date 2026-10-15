@@ -281,12 +281,15 @@ fn turning_dry_batteries_off_in_the_menu_keeps_the_clock_ticking() {
     a.apply(Action::GbaDown(Btn::Down));
     a.apply(Action::GbaDown(Btn::A));
     a.apply(Action::GbaDown(Btn::Up));
+    a.apply(Action::GbaDown(Btn::A));
+    a.apply(Action::GbaDown(Btn::Up));
     assert_eq!(a.quick_menu(), Some(slot_ui::QuickRow::Dry));
     a.apply(Action::GbaDown(Btn::Right));
     assert_eq!(
         a.quick_value(slot_ui::QuickRow::Dry),
         Some(slot_ui::QuickValue::Off)
     );
+    a.apply(Action::QuickMenu);
     a.apply(Action::QuickMenu);
     a.apply(Action::QuickMenu);
     a.apply(Action::Insert);
