@@ -7,15 +7,14 @@ use slot_input::{InputSource, Millis};
 use slot_power::{Platform, Power};
 use slot_store::{format_stamp, BezelPick, Platform as Console};
 use slot_ui::{
-    arrows_hint_coloured, arrows_hint_face, badge_face, bezel_face, cart_shadow, chip_face,
-    chip_shadow_face, date_time_text, default_game_bezel_face, footer_ink, game_bezel_face,
-    gb_cart_shadow, hhmm, hint_coloured, hint_face, icon_face, menu_face, photo_face,
-    quick_caret_face, quick_label_face, quick_legend_faces, quick_pointer_face, quick_value_face,
-    rebuild_count_face, rebuild_title_face, set_clock_hint_face, slot_back, slot_back_light,
-    slot_front, slot_front_light, socket_face, sticker_face, title_face, toast_face,
-    wallpaper_face, word_ink, CartFace, GbShell, Icon, LinkBadge, PowerChoice, QuickMenuFaces,
-    QuickRow, QuickValue, RebuildScreen, StickerFields, Toast, UndoFace, ALERT_PX, BOLT_PX,
-    HUD_ICON_PX, HUD_INK, LEGEND,
+    badge_face, bezel_face, cart_shadow, chip_face, chip_shadow_face, core_button_legends,
+    date_time_text, default_game_bezel_face, footer_ink, game_bezel_face, gb_cart_shadow, hhmm,
+    hint_face, icon_face, link_button_legends, menu_face, photo_face, quick_caret_face,
+    quick_label_face, quick_legend_faces, quick_pointer_face, quick_value_face, rebuild_count_face,
+    rebuild_title_face, set_clock_hint_face, slot_back, slot_back_light, slot_front,
+    slot_front_light, socket_face, sticker_face, title_face, toast_face, wallpaper_face, word_ink,
+    CartFace, GbShell, Icon, LinkBadge, PowerChoice, QuickMenuFaces, QuickRow, QuickValue,
+    RebuildScreen, StickerFields, Toast, UndoFace, ALERT_PX, BOLT_PX, HUD_ICON_PX, HUD_INK, LEGEND,
 };
 
 use crate::app::{App, LinkRow, Phase};
@@ -246,6 +245,9 @@ impl Frontend {
         self.session.app_mut().set_legend_faces(legend);
         let hint = set_clock_hint_face();
         self.clocks.hint = Some(compositor.create_texture(hint.w, hint.h, &hint.rgba));
+        let back = hint_face("B", "Back");
+        let tex = compositor.create_texture(back.w, back.h, &back.rgba);
+        self.session.app_mut().set_clock_back_face((tex, back.w));
         let star = slot_ui::star_face(slot_ui::STAR_SCALE, slot_ui::STAR_INK);
         let id = compositor.create_texture_nearest(star.w, star.h, &star.rgba);
         self.session.app_mut().set_star_face(id, star.w, star.h);
@@ -368,7 +370,6 @@ impl Frontend {
         let shadow = cart(faces.chip_shadow);
         let mut up = |f: UndoFace| (compositor.create_texture(f.w, f.h, &f.rgba), f.w, f.h);
         let lines = faces.shutdown.into_iter().map(&mut up).collect();
-        let menu = faces.power_menu.into_iter().map(&mut up).collect();
         let labels = faces
             .quick_labels
             .into_iter()
@@ -381,10 +382,14 @@ impl Frontend {
             .map(|v| v.map(&mut up))
             .collect();
         let carets = faces.quick_carets.map(&mut up);
-        let legend = faces.quick_legend.map(|f| {
-            let (tex, w, _) = up(f);
-            (tex, w)
-        });
+        let mut pack_legend = |faces: [UndoFace; 5]| {
+            faces.map(|f| {
+                let (tex, w, _) = up(f);
+                (tex, w)
+            })
+        };
+        let legend = pack_legend(faces.quick_legend);
+        let legend_light = pack_legend(faces.quick_legend_light);
         let core_legend = faces
             .core_legend
             .into_iter()
@@ -417,13 +422,13 @@ impl Frontend {
         app.set_blow_face(blow, blow_w);
         app.set_link_badge_faces(link_badges);
         app.set_shutdown_faces(lines);
-        app.set_power_menu_faces(menu);
         app.set_quick_menu_faces(QuickMenuFaces {
             labels,
             pointer,
             values,
             carets,
             legend,
+            legend_light,
         });
         app.set_core_part_faces(sockets, chips, blank, shadow);
         app.set_core_legend_faces(core_legend);
@@ -509,6 +514,7 @@ impl Frontend {
         });
         compositor.set_shake(self.session.app().screen_shake());
         compositor.set_screen_power(self.session.app().screen_power());
+        compositor.set_screen_footer(self.session.app().screen_footer());
         compositor.set_overlay_slide(self.session.app().overlay_slide());
         compositor.set_game_source_rect(self.session.app().source_rect());
         self.grab_link_shot(compositor);
@@ -737,15 +743,7 @@ impl Frontend {
 }
 
 fn link_legend_faces(ink: [u8; 3]) -> Vec<UndoFace> {
-    vec![
-        hint_coloured("B", "Cancel", ink),
-        hint_coloured("SELECT", "Mode", ink),
-        arrows_hint_coloured("Swap", ink),
-        hint_coloured("A", "Link", ink),
-        hint_coloured("A", "OK", ink),
-        hint_coloured("B", "Back", ink),
-        hint_coloured("A", "End Link", ink),
-    ]
+    link_button_legends(ink)
 }
 
 fn legend_faces(compositor: &mut Compositor, legend: &[(&str, &str)]) -> Vec<TexId> {
@@ -761,12 +759,12 @@ fn legend_faces(compositor: &mut Compositor, legend: &[(&str, &str)]) -> Vec<Tex
 struct UiFaces {
     link_badges: Vec<CartFace>,
     shutdown: Vec<UndoFace>,
-    power_menu: Vec<UndoFace>,
     quick_labels: Vec<[UndoFace; 2]>,
     quick_pointer: UndoFace,
     quick_values: Vec<[UndoFace; 2]>,
     quick_carets: [UndoFace; 2],
-    quick_legend: [UndoFace; 4],
+    quick_legend: [UndoFace; 5],
+    quick_legend_light: [UndoFace; 5],
     sockets: Vec<CartFace>,
     chips: Vec<CartFace>,
     blank_chip: CartFace,
@@ -804,10 +802,6 @@ impl UiFaces {
                     })
                 })
                 .collect(),
-            power_menu: PowerChoice::ALL
-                .iter()
-                .map(|c| menu_face(c.text()))
-                .collect(),
             quick_labels: QuickRow::ALL
                 .iter()
                 .map(|r| [false, true].map(|lit| quick_label_face(*r, lit)))
@@ -818,7 +812,8 @@ impl UiFaces {
                 .map(|v| [false, true].map(|lit| quick_value_face(v.text(), lit)))
                 .collect(),
             quick_carets: [false, true].map(quick_caret_face),
-            quick_legend: quick_legend_faces(),
+            quick_legend: quick_legend_faces(footer_ink(false)),
+            quick_legend_light: quick_legend_faces(footer_ink(true)),
             sockets: slot_store::Core::ALL
                 .iter()
                 .map(|c| socket_face(*c))
@@ -829,11 +824,7 @@ impl UiFaces {
                 .collect(),
             blank_chip: chip_face(None),
             chip_shadow: chip_shadow_face(),
-            core_legend: vec![
-                hint_face("B", "Cancel"),
-                arrows_hint_face("Swap"),
-                hint_face("A", "Choose"),
-            ],
+            core_legend: core_button_legends(),
             link_roles: LinkRow::ALL.iter().map(|r| menu_face(r.text())).collect(),
             linked: menu_face("Linked"),
             link_legend: link_legend_faces(footer_ink(false)),
