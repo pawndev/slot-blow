@@ -136,7 +136,10 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Experimental"
         ]
     );
-    assert_eq!(QuickRow::EXPERIMENTAL.map(QuickRow::label), ["Dusty Carts"]);
+    assert_eq!(
+        QuickRow::EXPERIMENTAL.map(QuickRow::label),
+        ["Dusty Carts", "Dry Batteries"]
+    );
     let opens: Vec<QuickRow> = QuickRow::ALL.into_iter().filter(|r| r.opens()).collect();
     assert_eq!(
         opens,

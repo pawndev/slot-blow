@@ -22,6 +22,7 @@ use slot_ui::{
 
 use crate::audio::Sfx;
 use crate::core_picker::{Chip, CorePicker, Outcome, Press};
+use crate::dry::{Bench, Cue, Dry};
 use crate::dust::{self, Dust, Glitch};
 use crate::link_kind::{link_carried, link_kind, serial_option, LinkKind};
 use crate::link_radio::{radio_jobs, LinkRole, RadioJob, RadioJobs};
@@ -244,6 +245,12 @@ pub const LINKED_HOLD_MS: Millis = 1000;
 
 pub const UNPLUG_HOLD_MS: Millis = 420;
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Snag {
+    Dust(u64),
+    Dry(u64),
+}
+
 #[derive(Debug)]
 pub enum Phase {
     SetClock {
@@ -261,7 +268,7 @@ pub enum Phase {
         core_ready: bool,
         resumed: bool,
         clean: bool,
-        dud: Option<u64>,
+        snag: Option<Snag>,
     },
     Dud {
         cart: String,
@@ -270,6 +277,10 @@ pub enum Phase {
         puff: f32,
         held: bool,
         sounded: Millis,
+    },
+    Dry {
+        cart: String,
+        bench: Box<Bench>,
     },
     Playing {
         cart: String,
@@ -431,6 +442,7 @@ pub struct App {
     last_led: Option<LedState>,
     powering_off: bool,
     dust: Dust,
+    dry: Dry,
     reseat: bool,
     blow_face: Option<(TexId, u32)>,
     radio: Box<dyn RadioJobs>,
@@ -445,6 +457,14 @@ pub struct FaceWant {
     pub shelf: usize,
     pub index: usize,
     pub on_screen: bool,
+}
+
+fn sounded(cue: Cue) -> Sfx {
+    match cue {
+        Cue::Blip => Sfx::Blip,
+        Cue::Sizzle => Sfx::Sizzle,
+        Cue::Ding => Sfx::Ding,
+    }
 }
 
 fn shelves_of(carts: Vec<Cart>) -> Vec<(Rack, Shelf)> {
@@ -597,6 +617,7 @@ impl App {
             last_led: None,
             powering_off: false,
             dust: Dust::clean(),
+            dry: Dry::clean(),
             reseat: false,
             blow_face: None,
         }
@@ -648,12 +669,12 @@ impl App {
                 self.shelf_mut().select(i);
                 self.insert(false);
                 if let Phase::Inserting {
-                    resumed, t, dud, ..
+                    resumed, t, snag, ..
                 } = &mut self.phase
                 {
                     *resumed = true;
                     *t = INSERT_S;
-                    *dud = None;
+                    *snag = None;
                 }
             }
             None => {
@@ -927,6 +948,7 @@ impl App {
             QuickRow::EjectSave => Some(QuickValue::flag(self.state.eject_save)),
             QuickRow::Turbo => Some(QuickValue::flag(self.state.turbo)),
             QuickRow::Dusty => Some(QuickValue::flag(self.state.dusty)),
+            QuickRow::Dry => Some(QuickValue::flag(self.state.dry)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
             QuickRow::RunAhead => QuickValue::frames(self.state.runahead),
             QuickRow::Recents => Some(if self.state.show_recents {
@@ -1321,6 +1343,7 @@ impl App {
         let stem = match &self.phase {
             Phase::Inserting { cart, .. }
             | Phase::Dud { cart, .. }
+            | Phase::Dry { cart, .. }
             | Phase::Playing { cart }
             | Phase::Ejecting { cart, .. }
             | Phase::Polaroids { cart } => cart,
@@ -1448,6 +1471,9 @@ impl App {
     }
 
     pub fn takes_from_the_game(&self, action: Action) -> bool {
+        if matches!(self.phase, Phase::Dry { .. }) {
+            return matches!(action, Action::GbaDown(_) | Action::GbaUp(_));
+        }
         match action {
             Action::GbaDown(btn) | Action::GbaUp(btn) => self.taken_buttons().contains(&btn),
             _ => false,
@@ -1926,6 +1952,10 @@ impl App {
                 Action::Eject => self.eject(),
                 _ => {}
             },
+            Phase::Dry { .. } => match action {
+                Action::Eject => self.eject(),
+                _ => self.solder(action),
+            },
             Phase::Playing { .. } => match action {
                 Action::GbaDown(Btn::L1) if self.slot_owns_the_shoulders() => {
                     self.set_picture(VideoMode::Stretch)
@@ -2081,6 +2111,7 @@ impl App {
             | QuickRow::GbPalettes
             | QuickRow::RunAhead
             | QuickRow::Dusty
+            | QuickRow::Dry
             | QuickRow::Rumble
             | QuickRow::Theme
             | QuickRow::Recents
@@ -2188,6 +2219,7 @@ impl App {
             QuickRow::EjectSave => s.eject_save = !s.eject_save,
             QuickRow::Turbo => s.turbo = !s.turbo,
             QuickRow::Dusty => s.dusty = !s.dusty,
+            QuickRow::Dry => s.dry = !s.dry,
             QuickRow::Rewind => s.rewind = !s.rewind,
             QuickRow::GbPalettes => s.gb_palettes = !s.gb_palettes,
             QuickRow::RunAhead => {
@@ -2473,7 +2505,9 @@ impl App {
         }
         let mut touched = false;
         let mut blew = false;
+        let mut cue = None;
         let reseat = self.reseat;
+        let platform = self.seated_cart().map(|c| c.platform);
         let at = self.shelf_at;
         let next = match &mut self.phase {
             Phase::Shelf => {
@@ -2487,15 +2521,19 @@ impl App {
                 t,
                 core_ready,
                 resumed,
-                dud,
+                snag,
                 ..
             } => {
                 let was = *t;
                 *t += dt;
                 let at = SEATED_AT - Sfx::Insert.lead();
                 touched = !*resumed && was < at && *t >= at;
-                (*t >= INSERT_S && *core_ready).then(|| match dud.take() {
-                    Some(seed) => Phase::Dud {
+                (*t >= INSERT_S && *core_ready).then(|| match snag.take() {
+                    Some(Snag::Dry(seed)) => Phase::Dry {
+                        cart: std::mem::take(cart),
+                        bench: Box::new(Bench::new(platform.unwrap_or(Platform::Gba), seed)),
+                    },
+                    Some(Snag::Dust(seed)) => Phase::Dud {
                         cart: std::mem::take(cart),
                         seed,
                         since: now,
@@ -2527,6 +2565,13 @@ impl App {
                     t: -RESEAT_HOLD_S,
                 })
             }
+            Phase::Dry { cart, bench } => {
+                bench.step(dt);
+                cue = bench.take_cue();
+                bench.done().then(|| Phase::Playing {
+                    cart: std::mem::take(cart),
+                })
+            }
             Phase::Ejecting { cart, t } => {
                 if self.screen <= 0.0 {
                     let was = *t;
@@ -2540,7 +2585,7 @@ impl App {
                         core_ready: false,
                         resumed: false,
                         clean: false,
-                        dud: None,
+                        snag: None,
                     },
                     false => Phase::Shelf,
                 })
@@ -2554,15 +2599,20 @@ impl App {
             });
         } else if blew {
             self.sfx = Some(Sfx::Blow);
+        } else if let Some(cue) = cue {
+            self.sfx = Some(sounded(cue));
         }
         if let Some(phase) = next {
             self.phase = phase;
             self.refused_from = None;
             match &mut self.phase {
                 Phase::Ejecting { .. } => self.reseat = true,
-                Phase::Inserting { dud, .. } => {
+                Phase::Inserting { .. } => {
                     self.reseat = false;
-                    *dud = self.state.dusty.then(|| self.dust.roll()).flatten();
+                    let rolled = self.roll_snag();
+                    if let Phase::Inserting { snag, .. } = &mut self.phase {
+                        *snag = rolled;
+                    }
                 }
                 _ => {}
             }
@@ -2585,7 +2635,7 @@ impl App {
     fn step_screen(&mut self, dt: f32) {
         let lit = matches!(
             self.phase,
-            Phase::Playing { .. } | Phase::Polaroids { .. } | Phase::Dud { .. }
+            Phase::Playing { .. } | Phase::Polaroids { .. } | Phase::Dud { .. } | Phase::Dry { .. }
         );
         let step = if lit {
             dt / POWER_ON_S
@@ -2601,6 +2651,7 @@ impl App {
             self.phase,
             Phase::Inserting { .. }
                 | Phase::Dud { .. }
+                | Phase::Dry { .. }
                 | Phase::Playing { .. }
                 | Phase::Polaroids { .. }
                 | Phase::Ejecting { .. }
@@ -3173,6 +3224,11 @@ impl App {
                 out.push(Draw::Game);
                 self.draw_blow(*since, *puff, out);
             }
+            Phase::Dry { cart, .. } if self.screen < 1.0 => {
+                self.draw_background(out);
+                self.chrome(cart, 0.0, out);
+            }
+            Phase::Dry { .. } => out.push(Draw::Game),
             Phase::Playing { .. } => self.push_game(out),
             Phase::Polaroids { .. } => {
                 self.push_game(out);
@@ -3407,12 +3463,13 @@ impl App {
             alert: self.alert_face.filter(|_| alpha > 0.0).map(|t| (t, alpha)),
             dim,
             screen: self.screen,
-            game: self.game_ready || matches!(self.phase, Phase::Dud { .. }),
+            game: self.game_ready || matches!(self.phase, Phase::Dud { .. } | Phase::Dry { .. }),
             over: !matches!(
                 &self.phase,
                 Phase::Inserting { resumed: true, .. }
                     | Phase::Playing { .. }
                     | Phase::Dud { .. }
+                    | Phase::Dry { .. }
                     | Phase::Ejecting { .. }
             ),
             behind: self.shelf().behind(stem),
@@ -3795,14 +3852,14 @@ impl App {
         self.refusal = None;
         self.refused_from = None;
         self.reseat = false;
-        let dud = self.state.dusty.then(|| self.dust.roll()).flatten();
+        let snag = self.roll_snag();
         self.phase = Phase::Inserting {
             cart,
             t: 0.0,
             core_ready: false,
             resumed: false,
             clean,
-            dud,
+            snag,
         };
     }
 
@@ -3833,9 +3890,10 @@ impl App {
         };
         self.in_game_menu = None;
         let cart = match &mut self.phase {
-            Phase::Playing { cart } | Phase::Inserting { cart, .. } | Phase::Dud { cart, .. } => {
-                std::mem::take(cart)
-            }
+            Phase::Playing { cart }
+            | Phase::Inserting { cart, .. }
+            | Phase::Dud { cart, .. }
+            | Phase::Dry { cart, .. } => std::mem::take(cart),
             _ => return,
         };
         self.reseat = false;
@@ -3894,9 +3952,10 @@ impl App {
         self.state_writer.flush();
         self.flush_resume();
         let cart = match &mut self.phase {
-            Phase::Playing { cart } | Phase::Polaroids { cart } | Phase::Dud { cart, .. } => {
-                Some(std::mem::take(cart))
-            }
+            Phase::Playing { cart }
+            | Phase::Polaroids { cart }
+            | Phase::Dud { cart, .. }
+            | Phase::Dry { cart, .. } => Some(std::mem::take(cart)),
             _ => None,
         };
         if std::mem::take(&mut self.states_from_menu) {
@@ -4598,6 +4657,42 @@ impl App {
 
     pub fn set_dust(&mut self, dust: Dust) {
         self.dust = dust;
+    }
+
+    pub fn set_dry(&mut self, dry: Dry) {
+        self.dry = dry;
+    }
+
+    pub fn bench(&self) -> Option<&Bench> {
+        match &self.phase {
+            Phase::Dry { bench, .. } => Some(bench),
+            _ => None,
+        }
+    }
+
+    fn solder(&mut self, action: Action) {
+        let Phase::Dry { bench, .. } = &mut self.phase else {
+            return;
+        };
+        match action {
+            Action::GbaDown(btn) => bench.press(btn),
+            Action::GbaUp(btn) => bench.release(btn),
+            _ => return,
+        }
+        if let Some(cue) = bench.take_cue() {
+            self.sfx = Some(sounded(cue));
+        }
+    }
+
+    fn roll_snag(&mut self) -> Option<Snag> {
+        if let Some(seed) = self.state.dusty.then(|| self.dust.roll()).flatten() {
+            return Some(Snag::Dust(seed));
+        }
+        self.state
+            .dry
+            .then(|| self.dry.roll())
+            .flatten()
+            .map(Snag::Dry)
     }
 
     pub fn set_blow_face(&mut self, face: TexId, w: u32) {

@@ -26,6 +26,7 @@ pub enum QuickRow {
     GbPalettes,
     RunAhead,
     Dusty,
+    Dry,
     Theme,
     Wallpaper,
     General,
@@ -54,7 +55,7 @@ pub enum QuickRow {
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 42] = [
+    pub const ALL: [QuickRow; 43] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -72,6 +73,7 @@ impl QuickRow {
         QuickRow::GbPalettes,
         QuickRow::RunAhead,
         QuickRow::Dusty,
+        QuickRow::Dry,
         QuickRow::Theme,
         QuickRow::Wallpaper,
         QuickRow::General,
@@ -148,7 +150,7 @@ impl QuickRow {
         QuickRow::Experimental,
     ];
 
-    pub const EXPERIMENTAL: [QuickRow; 1] = [QuickRow::Dusty];
+    pub const EXPERIMENTAL: [QuickRow; 2] = [QuickRow::Dusty, QuickRow::Dry];
 
     pub const PLAY: [QuickRow; 4] = [
         QuickRow::Resume,
@@ -191,7 +193,7 @@ impl QuickRow {
             | QuickRow::Rumble
             | QuickRow::EjectSave
             | QuickRow::Experimental => &QuickRow::GAME,
-            QuickRow::Dusty => &QuickRow::EXPERIMENTAL,
+            QuickRow::Dusty | QuickRow::Dry => &QuickRow::EXPERIMENTAL,
             QuickRow::Wallpaper
             | QuickRow::WallpaperTint
             | QuickRow::DateTime
@@ -293,6 +295,7 @@ impl QuickRow {
             QuickRow::GbPalettes => "Palettes",
             QuickRow::RunAhead => "Run-Ahead",
             QuickRow::Dusty => "Dusty Carts",
+            QuickRow::Dry => "Dry Batteries",
             QuickRow::Theme => "Theme",
             QuickRow::Wallpaper => "Wallpaper",
             QuickRow::General => "General",
