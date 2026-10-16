@@ -219,6 +219,7 @@ pub struct SlotState {
     pub runahead: u8,
     pub gb_palettes: bool,
     pub gb_palette: GbPalette,
+    pub label_wear: bool,
     pub appearance: Appearance,
     pub wallpaper: WallpaperPick,
     pub wallpaper_tint: WallpaperTint,
@@ -341,6 +342,7 @@ impl Default for SlotState {
             runahead: 0,
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
+            label_wear: true,
             appearance: Appearance::Dark,
             wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off,
@@ -405,7 +407,7 @@ fn write_list(root: &Path, name: &str, list: &[Recent]) -> std::io::Result<()> {
 
 pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     let mut text = format!(
-        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction_gba={}\ncolour_correction_gb={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\nrunahead={}\ngb_palettes={}\ngb_palette={}\nappearance={}\nwallpaper={}\n",
+        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nutc_offset_min={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction_gba={}\ncolour_correction_gb={}\nshader_gba={}\nshader_gb={}\neject_save={}\nturbo={}\nrewind={}\nrunahead={}\ngb_palettes={}\ngb_palette={}\nlabel_wear={}\nappearance={}\nwallpaper={}\n",
         s.cart.as_deref().unwrap_or(""),
         s.cart_platform.map_or(String::new(), platform_key),
         s.brightness,
@@ -429,6 +431,7 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.runahead,
         s.gb_palettes as u8,
         s.gb_palette.core_name(),
+        s.label_wear as u8,
         s.appearance.name(),
         s.wallpaper.key()
     );
@@ -484,6 +487,7 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut runahead = None;
     let mut gb_palettes = None;
     let mut gb_palette = None;
+    let mut label_wear = None;
     let mut appearance = None;
     let mut wallpaper = None;
     let mut wallpaper_tint = None;
@@ -523,6 +527,7 @@ fn parse(text: &str) -> Option<SlotState> {
             "runahead" => runahead = level(value, RUN_AHEAD_MAX),
             "gb_palettes" => gb_palettes = flag(value),
             "gb_palette" => gb_palette = GbPalette::parse(value),
+            "label_wear" => label_wear = flag(value),
             "appearance" => appearance = Appearance::parse(value),
             "wallpaper" => wallpaper = Some(WallpaperPick::parse(value)),
             "wallpaper_tint" => wallpaper_tint = WallpaperTint::parse(value),
@@ -573,6 +578,7 @@ fn parse(text: &str) -> Option<SlotState> {
         runahead: runahead.unwrap_or(fallback.runahead),
         gb_palettes: gb_palettes.unwrap_or(fallback.gb_palettes),
         gb_palette: gb_palette.unwrap_or(fallback.gb_palette),
+        label_wear: label_wear.unwrap_or(fallback.label_wear),
         appearance: appearance.unwrap_or(fallback.appearance),
         wallpaper: wallpaper.unwrap_or(fallback.wallpaper),
         wallpaper_tint: wallpaper_tint.unwrap_or(fallback.wallpaper_tint),
