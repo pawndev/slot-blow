@@ -9486,18 +9486,25 @@ impl App {
         } else {
             match trusted_sav(snapshot.as_ref(), "autosave") {
                 Some(sav) => (None, Some(sav), "in-game save"),
-                None => return,
+                None => (None, None, "play time"),
             }
         };
         let (root, platform, core, cart) =
             (root.clone(), self.platform, self.core, cart.to_owned());
         let played = self.bank_play(&cart);
+        let saving = state.is_some() || sav.is_some();
+        if !saving && played.is_none() {
+            return;
+        }
         let failing = self.card_writes.clone();
         let write = move || {
             if let Some(total) = played {
                 if let Err(e) = write_play_time(&root, &cart, total) {
                     eprintln!("slot: play time: {e}");
                 }
+            }
+            if !saving {
+                return;
             }
             let written = persist::flush(
                 &root,
