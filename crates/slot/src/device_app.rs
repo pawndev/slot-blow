@@ -129,6 +129,7 @@ pub fn run() {
     slot::boot_time::mark("audio");
     let mut frontend = Frontend::boot_with(Box::new(platform), sink);
     frontend.set_dust(slot::dust::Dust::shaken());
+    frontend.set_dry(slot::dry::Dry::shaken());
     slot::boot_time::mark("frontend");
     let target = slot::baseos::var("BASEOS_TARGET").unwrap_or_default();
     frontend.set_left_stick(slot::input::evdev::has_left_stick(&target));

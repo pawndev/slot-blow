@@ -11,17 +11,26 @@ pub enum Sfx {
     PrintBuzz,
     Tear,
     Blow,
+    Blip,
+    Sizzle,
+    Ding,
 }
 
 const BLOW_S: f32 = 0.32;
 const BLOW_GAIN: f32 = 9000.0;
+
+const BLIP: &[(f32, f32)] = &[(1760.0, 0.05)];
+const DING: &[(f32, f32)] = &[(1318.5, 0.07), (1760.0, 0.2)];
+const TONE_GAIN: f32 = 4200.0;
+const SIZZLE_S: f32 = 0.28;
+const SIZZLE_GAIN: f32 = 7000.0;
 
 impl Sfx {
     pub fn lead(self) -> f32 {
         match self {
             Sfx::Insert => 0.097,
             Sfx::Eject => 0.021,
-            Sfx::PrintBuzz | Sfx::Tear | Sfx::Blow => 0.0,
+            Sfx::PrintBuzz | Sfx::Tear | Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => 0.0,
         }
     }
 
@@ -31,28 +40,35 @@ impl Sfx {
             Sfx::Eject => EJECT,
             Sfx::PrintBuzz => PRINT_BUZZ,
             Sfx::Tear => TEAR,
-            Sfx::Blow => &[],
+            Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => &[],
         }
     }
 
     fn level(self) -> f32 {
         match self {
-            Sfx::Insert | Sfx::Eject | Sfx::Blow => 1.0,
             Sfx::PrintBuzz => 0.40,
             Sfx::Tear => 0.45,
+            _ => 1.0,
         }
     }
 
     pub fn tail(self) -> f32 {
-        if self == Sfx::Blow {
-            return BLOW_S;
+        match self {
+            Sfx::Blow => BLOW_S,
+            Sfx::Blip => length(BLIP),
+            Sfx::Sizzle => SIZZLE_S,
+            Sfx::Ding => length(DING),
+            _ => self.pcm().len() as f32 / 2.0 / ASSET_HZ - self.lead(),
         }
-        self.pcm().len() as f32 / 2.0 / ASSET_HZ - self.lead()
     }
 
     pub fn render(self, sample_rate: u32) -> Vec<i16> {
-        if self == Sfx::Blow {
-            return breath(sample_rate);
+        match self {
+            Sfx::Blow => return breath(sample_rate),
+            Sfx::Blip => return tones(sample_rate, BLIP),
+            Sfx::Sizzle => return sizzle(sample_rate),
+            Sfx::Ding => return tones(sample_rate, DING),
+            _ => {}
         }
         let pcm = self.pcm();
         let level = self.level();
@@ -84,6 +100,55 @@ fn breath(sample_rate: u32) -> Vec<i16> {
         let t = i as f32 / rate;
         let env = (t / 0.04).min(1.0) * ((BLOW_S - t) / 0.12).clamp(0.0, 1.0);
         let s = ((low - slow) * BLOW_GAIN * env) as i16;
+        out.push(s);
+        out.push(s);
+    }
+    out
+}
+
+fn length(notes: &[(f32, f32)]) -> f32 {
+    notes.iter().map(|(_, s)| s).sum()
+}
+
+fn tones(sample_rate: u32, notes: &[(f32, f32)]) -> Vec<i16> {
+    let rate = sample_rate as f32;
+    let mut out = Vec::with_capacity((length(notes) * rate) as usize * 2);
+    for &(hz, secs) in notes {
+        let n = (secs * rate) as usize;
+        for i in 0..n {
+            let t = i as f32 / rate;
+            let square = if (t * hz).fract() < 0.5 { 1.0 } else { -1.0 };
+            let env = (t / 0.004).min(1.0) * (1.0 - t / secs).powi(2);
+            let s = (square * TONE_GAIN * env) as i16;
+            out.push(s);
+            out.push(s);
+        }
+    }
+    out
+}
+
+fn sizzle(sample_rate: u32) -> Vec<i16> {
+    let rate = sample_rate as f32;
+    let n = (SIZZLE_S * rate) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    let mut seed: u32 = 0x9e37_79b9;
+    let mut low = 0.0f32;
+    let mut crackle = 0.0f32;
+    let k = 1.0 - (-std::f32::consts::TAU * 3500.0 / rate).exp();
+    let decay = (-1.0 / (0.004 * rate)).exp();
+    for i in 0..n {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let white = seed as f32 / u32::MAX as f32 * 2.0 - 1.0;
+        low += k * (white - low);
+        if seed.is_multiple_of(900) {
+            crackle = 1.0;
+        }
+        crackle *= decay;
+        let t = i as f32 / rate;
+        let env = (t / 0.02).min(1.0) * ((SIZZLE_S - t) / 0.1).clamp(0.0, 1.0);
+        let s = ((white - low) * (0.35 + 0.65 * crackle) * SIZZLE_GAIN * env) as i16;
         out.push(s);
         out.push(s);
     }
