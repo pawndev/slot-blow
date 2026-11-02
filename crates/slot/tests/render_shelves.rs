@@ -221,8 +221,8 @@ fn the_shoulders_ring_over_a_shelf_for_each_system() {
     let mut seen = Vec::new();
     let mut marks = vec![name_pixels(&gba)];
     for (name, banner, _platform) in [
-        ("game-boy", "Game Boy", CartPlatform::Gb),
         ("game-boy-color", "Game Boy Color", CartPlatform::Gbc),
+        ("game-boy", "Game Boy", CartPlatform::Gb),
     ] {
         tap(&mut f, &mut input, Btn::R1);
         let_the_name_in(&mut f, &mut c, &mut input);
@@ -287,6 +287,77 @@ fn the_shoulders_ring_over_a_shelf_for_each_system() {
         name_ink(&later),
         0,
         "the shelf's name was still in the slot after it should have faded"
+    );
+}
+
+fn solid_wallpaper(root: &Path, name: &str, rgb: [u8; 3]) {
+    let dir = root.join("Wallpapers");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = std::fs::File::create(dir.join(name)).unwrap();
+    let mut e = png::Encoder::new(std::io::BufWriter::new(file), OUT_W, OUT_H);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    let px: Vec<u8> = rgb
+        .iter()
+        .copied()
+        .cycle()
+        .take((OUT_W * OUT_H * 3) as usize)
+        .collect();
+    e.write_header().unwrap().write_image_data(&px).unwrap();
+}
+
+#[test]
+fn the_shelf_wallpaper_changes_with_the_shelf_and_a_missing_file_shows_no_other_shelfs() {
+    let Ok(surface) = HeadlessSurface::new() else {
+        return;
+    };
+    let Ok(mut c) = Compositor::new(&surface) else {
+        return;
+    };
+    let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    put_game_boy_carts(d.path());
+    clocked(d.path());
+    let state = slot_store::read_slot_state(d.path());
+    slot_store::write_slot_state(
+        d.path(),
+        &slot_store::SlotState {
+            wallpaper: slot_store::WallpaperPick::Shelf,
+            ..state
+        },
+    )
+    .unwrap();
+    solid_wallpaper(d.path(), "GBA.png", [200, 0, 0]);
+    solid_wallpaper(d.path(), "GB.png", [0, 0, 200]);
+    let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
+    f.upload_faces(&mut c);
+    let mut input = Script(VecDeque::new());
+    f.advance(&mut input);
+    let_the_name_in(&mut f, &mut c, &mut input);
+
+    let mut fields = Vec::new();
+    for _ in 0..60 {
+        f.compose(&mut c);
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    for name in ["gba-wall", "gbc-wall", "gb-wall"] {
+        fields.push(field(&composed(&mut f, &mut c, name)));
+        tap(&mut f, &mut input, Btn::R1);
+        let_the_name_in(&mut f, &mut c, &mut input);
+    }
+    assert!(
+        fields[0][0] > 150 && fields[0][2] < 50,
+        "GBA: {:?}",
+        fields[0]
+    );
+    assert!(
+        !(fields[1][0] > 150 && fields[1][2] < 50),
+        "the GBC shelf kept the GBA wallpaper: {:?}",
+        fields[1]
+    );
+    assert!(
+        fields[2][2] > 150 && fields[2][0] < 50,
+        "GB: {:?}",
+        fields[2]
     );
 }
 
@@ -431,7 +502,7 @@ fn a_cart_going_in_from_a_repeated_row_takes_both_copies_of_its_neighbour_with_i
     app.update(SEATED_AT / 2.0);
     let halfway = shot(&app, &mut c, Some("insert-1-halfway"));
     let (mid, y) = span(&halfway, ink);
-    for _ in 0..120 {
+    for _ in 0..16 {
         app.update(1.0 / 60.0);
     }
     let seated = shot(&app, &mut c, Some("insert-2-seated"));
@@ -612,7 +683,7 @@ fn frame(c: &mut Compositor, out: &[Draw], name: &str) -> Vec<u8> {
 
 fn frame_named(c: &mut Compositor, out: &[Draw], name: Option<&str>) -> Vec<u8> {
     c.set_screen_power(1.0);
-    c.begin_frame(slot_gfx::Layout::Framed);
+    c.begin_frame();
     c.draw_list(out);
     let px = c.read_frame();
     if let (Some(name), Ok(dir)) = (name, std::env::var("SCRATCH_PNG_DIR")) {

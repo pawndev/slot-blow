@@ -1,11 +1,15 @@
 const INSERT: &[u8] = include_bytes!("../../assets/insert.pcm");
 const EJECT: &[u8] = include_bytes!("../../assets/eject.pcm");
+const PRINT_BUZZ: &[u8] = include_bytes!("../../../../assets/server/buzz.pcm");
+const TEAR: &[u8] = include_bytes!("../../../../assets/server/tear.pcm");
 const ASSET_HZ: f32 = 48_000.0;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Sfx {
     Insert,
     Eject,
+    PrintBuzz,
+    Tear,
     Blow,
     Blip,
     Sizzle,
@@ -26,34 +30,51 @@ impl Sfx {
         match self {
             Sfx::Insert => 0.097,
             Sfx::Eject => 0.021,
-            Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => 0.0,
+            Sfx::PrintBuzz | Sfx::Tear | Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => 0.0,
+        }
+    }
+
+    fn pcm(self) -> &'static [u8] {
+        match self {
+            Sfx::Insert => INSERT,
+            Sfx::Eject => EJECT,
+            Sfx::PrintBuzz => PRINT_BUZZ,
+            Sfx::Tear => TEAR,
+            Sfx::Blow | Sfx::Blip | Sfx::Sizzle | Sfx::Ding => &[],
+        }
+    }
+
+    fn level(self) -> f32 {
+        match self {
+            Sfx::PrintBuzz => 0.40,
+            Sfx::Tear => 0.45,
+            _ => 1.0,
         }
     }
 
     pub fn tail(self) -> f32 {
-        let pcm = match self {
-            Sfx::Insert => INSERT,
-            Sfx::Eject => EJECT,
-            Sfx::Blow => return BLOW_S,
-            Sfx::Blip => return length(BLIP),
-            Sfx::Sizzle => return SIZZLE_S,
-            Sfx::Ding => return length(DING),
-        };
-        pcm.len() as f32 / 2.0 / ASSET_HZ - self.lead()
+        match self {
+            Sfx::Blow => BLOW_S,
+            Sfx::Blip => length(BLIP),
+            Sfx::Sizzle => SIZZLE_S,
+            Sfx::Ding => length(DING),
+            _ => self.pcm().len() as f32 / 2.0 / ASSET_HZ - self.lead(),
+        }
     }
 
     pub fn render(self, sample_rate: u32) -> Vec<i16> {
-        let pcm = match self {
-            Sfx::Insert => INSERT,
-            Sfx::Eject => EJECT,
+        match self {
             Sfx::Blow => return breath(sample_rate),
             Sfx::Blip => return tones(sample_rate, BLIP),
             Sfx::Sizzle => return sizzle(sample_rate),
             Sfx::Ding => return tones(sample_rate, DING),
-        };
+            _ => {}
+        }
+        let pcm = self.pcm();
+        let level = self.level();
         let mut out = Vec::with_capacity(pcm.len());
         for v in resampled(pcm, sample_rate) {
-            let s = v.clamp(-32768.0, 32767.0) as i16;
+            let s = (v * level).clamp(-32768.0, 32767.0) as i16;
             out.push(s);
             out.push(s);
         }

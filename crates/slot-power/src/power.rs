@@ -71,12 +71,24 @@ impl Power {
         self.platform.restart()
     }
 
+    pub fn repair_card(&mut self) -> ! {
+        self.platform.repair_card()
+    }
+
+    pub fn take_repair_result(&mut self) -> Option<crate::RepairResult> {
+        self.platform.take_repair_result()
+    }
+
     pub fn now(&self) -> i64 {
         self.platform.now()
     }
 
     pub fn set_clock(&mut self, secs: i64) {
         self.platform.set_clock(secs);
+    }
+
+    pub fn set_clock_in_background(&mut self, secs: i64) {
+        self.platform.set_clock_in_background(secs);
     }
 }
 

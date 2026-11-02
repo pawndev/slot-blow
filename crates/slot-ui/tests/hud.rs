@@ -9,7 +9,7 @@ fn bottom_edge(d: &Draw) -> Option<f32> {
         | Draw::Tex { y, h, .. }
         | Draw::Part { y, h, .. }
         | Draw::Turned { y, h, .. } => Some(y + h),
-        Draw::Game | Draw::Shot { .. } => None,
+        Draw::Game | Draw::Shot { .. } | Draw::Capture | Draw::Quad { .. } | Draw::Paper { .. } => None,
     }
 }
 
@@ -249,4 +249,25 @@ fn volume_on_headphones_shows_headphones() {
     assert_eq!(HudKind::Volume.icon(0, false, true), Icon::Headphones);
     assert_eq!(HudKind::Volume.icon(40, true, true), Icon::HeadphonesMuted);
     assert_eq!(HudKind::Brightness.icon(4, false, true), Icon::Brightness);
+}
+
+#[test]
+fn hushing_drops_the_toast_but_keeps_the_alarm() {
+    let mut h = Hud::new();
+    h.set_alarm(true, 0);
+    h.toast(slot_ui::Toast::StateSaved, 10);
+    h.hush();
+    assert_eq!(h.said(20), None);
+    assert!(h.alarmed());
+}
+
+#[test]
+fn the_sunlight_bar_has_its_own_icon_and_fills_to_ten() {
+    assert_eq!(HudKind::Sunlight.icon(0, false, false), Icon::Sunlight);
+    assert_ne!(Icon::Sunlight.glyph(), Icon::Brightness.glyph());
+    assert_eq!(fill(HudKind::Sunlight, 10), fill(HudKind::Brightness, 9));
+    assert_eq!(
+        fill(HudKind::Sunlight, 5) * 2.0,
+        fill(HudKind::Sunlight, 10)
+    );
 }

@@ -56,7 +56,7 @@ fn quads(out: &[Draw]) -> Vec<Quad> {
             Draw::Turned {
                 x, y, w, h, alpha, ..
             } => Quad { x, y, w, h, alpha },
-            Draw::Game | Draw::Shot { .. } => Quad {
+            Draw::Game | Draw::Shot { .. } | Draw::Capture | Draw::Quad { .. } | Draw::Paper { .. } => Quad {
                 x: 0.0,
                 y: 0.0,
                 w: OUT_W as f32,
@@ -129,9 +129,9 @@ fn there_is_one_dot_per_entry_and_exactly_one_is_selected() {
 #[test]
 fn the_title_follows_the_selection() {
     let mut p = switcher_with(3);
-    let first = p.title("2026-08-09_14-36-05");
+    let first = p.title("2026-08-09_14-36-05", true);
     p.right();
-    let second = p.title("2026-08-09_14-36-05");
+    let second = p.title("2026-08-09_14-36-05", true);
     assert_ne!(first, second, "the title did not move with the selection");
 }
 
