@@ -3,8 +3,10 @@ use slot_ui::{sticker_lines, StickerFields};
 fn fields() -> StickerFields<'static> {
     StickerFields {
         battery: Some(87),
-        serial: "0473885",
-        dirty_digit: '0',
+        serial: "04738857",
+        version: "0.1.0",
+        baseos: None,
+        model: "RG SP",
     }
 }
 
@@ -59,7 +61,7 @@ fn the_compliance_block_is_the_credits() {
 #[test]
 fn the_serial_row_matches_the_encoded_hash() {
     let all = sticker_lines(&fields()).join("\n");
-    assert!(all.contains("0473885"), "{all}");
+    assert!(all.contains("0473885 7"), "{all}");
 }
 
 #[test]
@@ -92,4 +94,72 @@ fn the_wordmarks_top_edge_is_antialiased_not_a_hard_step() {
         edges.iter().any(|&e| e != INK),
         "every sampled column's top edge jumps straight from the ground to the ink: {edges:?}"
     );
+}
+
+#[test]
+fn the_version_rides_above_the_readme_line() {
+    let lines = sticker_lines(&fields());
+    let home = lines.iter().position(|l| l == "SEE README.").unwrap();
+    assert_eq!(lines[home - 1], "VERSION 0.1.0");
+}
+
+#[test]
+fn the_baseos_version_sits_under_slots() {
+    let lines = sticker_lines(&StickerFields {
+        baseos: Some("1.5.2"),
+        ..fields()
+    });
+    let home = lines.iter().position(|l| l == "SEE README.").unwrap();
+    assert_eq!(lines[home - 2..home], ["VERSION 0.1.0", "BASEOS 1.5.2"]);
+}
+
+fn wordmark_left_edge(model: &str) -> u32 {
+    let face = slot_ui::sticker_face(&StickerFields { model, ..fields() });
+    let lit = |x: u32, y: u32| {
+        let i = ((y * face.w + x) * 4) as usize;
+        face.rgba[i..i + 3].iter().all(|&c| c > 200)
+    };
+    (200..face.w)
+        .find(|&x| (136..164).any(|y| lit(x, y)))
+        .unwrap()
+}
+
+#[test]
+fn a_longer_model_name_reaches_further_left_from_the_same_right_edge() {
+    assert!(wordmark_left_edge("RG35XX SP") + 60 < wordmark_left_edge("RG SP"));
+}
+
+#[test]
+fn a_model_the_face_cannot_set_falls_back_to_rg_sp() {
+    let rg_sp = slot_ui::sticker_face(&fields()).rgba;
+    for model in ["", "RG#SP"] {
+        let face = slot_ui::sticker_face(&StickerFields { model, ..fields() });
+        assert!(face.rgba == rg_sp, "{model:?} did not draw RG SP");
+    }
+}
+
+#[test]
+fn the_model_is_set_in_capitals_whatever_baseos_wrote() {
+    let upper = slot_ui::sticker_face(&StickerFields {
+        model: "RG35XX SP",
+        ..fields()
+    });
+    let lower = slot_ui::sticker_face(&StickerFields {
+        model: "rg35xx sp",
+        ..fields()
+    });
+    assert!(upper.rgba == lower.rgba);
+}
+
+#[test]
+fn a_model_baseos_gives_two_names_shows_the_first() {
+    let both = slot_ui::sticker_face(&StickerFields {
+        model: "RG35XX Plus / RG35XX 2024",
+        ..fields()
+    });
+    let plus = slot_ui::sticker_face(&StickerFields {
+        model: "RG35XX Plus",
+        ..fields()
+    });
+    assert!(both.rgba == plus.rgba);
 }

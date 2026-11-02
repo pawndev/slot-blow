@@ -1,6 +1,6 @@
 mod common;
 
-use slot_store::{Core, Platform};
+use slot_store::{Blending, Core, Platform};
 
 fn dylib_for(core: Core) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -437,10 +437,11 @@ fn a_gpsp_carts_resume_is_read_from_its_own_core_directory_through_the_session()
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    s.app_mut().tick_ms(60_000);
+    s.app_mut().tick_ms(300_000);
     s.app_mut().settle_saves();
 
     let state = persist::read_resume(d.path(), Platform::Gba, Core::Gpsp, "Emerald")
+        .unwrap()
         .expect("nothing resumed");
     let n = u64::from_le_bytes(state.try_into().expect("mock state is 8 bytes"));
     assert!(
@@ -487,10 +488,11 @@ fn a_gpsp_cart_runs_the_dylib_planted_under_its_own_name_through_the_session() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    s.app_mut().tick_ms(60_000);
+    s.app_mut().tick_ms(300_000);
     s.app_mut().settle_saves();
 
     let state = persist::read_resume(d.path(), Platform::Gba, Core::Gpsp, "Emerald")
+        .unwrap()
         .expect("nothing resumed");
     assert!(
         state.len() > 100_000,
@@ -527,7 +529,7 @@ fn changing_the_ini_mid_session_does_not_move_a_seated_carts_autosave() {
 
     std::fs::remove_file(d.path().join(SELECTED_CORE_FILE)).unwrap();
 
-    s.app_mut().tick_ms(60_000);
+    s.app_mut().tick_ms(300_000);
     s.app_mut().settle_saves();
 
     assert!(
@@ -663,6 +665,7 @@ fn open_core_reaches_a_gpsp_named_dylib_under_the_content_roots_system_directory
         Platform::Gba,
         "auto",
         false,
+        Blending::Off,
         None,
         None,
     )
@@ -709,6 +712,7 @@ fn a_game_boy_carts_gpsp_line_is_dropped_and_it_runs_on_the_platform_default() {
 
     let counter = |core| {
         persist::read_resume(d.path(), Platform::Gb, core, "Tetris")
+            .unwrap()
             .map(|b| u64::from_le_bytes(b.try_into().expect("the mock's state is 8 bytes")))
     };
 

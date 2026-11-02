@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use slot::label_cache::{cache_path, fresh, label_art, stale, Rebuild};
+use slot::label_cache::{cache_path, fresh, label_art, stale, Rebuild, SCREEN_FROM};
 use slot_store::{Cart, Platform};
 use slot_ui::label_size;
 
@@ -34,7 +34,7 @@ fn a_scaled_label_is_cached_outside_the_studio_folder_and_read_back() {
     let cart = cart_with_label(d.path(), [200, 10, 10]);
     let first = label_art(d.path(), &cart).expect("no art from a good label");
     let cached = cache_path(d.path(), &cart);
-    assert!(cached.starts_with(d.path().join("System")));
+    assert!(cached.starts_with(d.path().join("Cache/Labels")));
     assert!(cached.is_file(), "the scaled label was not cached");
     let (w, h) = label_size(&cart);
     assert_eq!(first.len(), (w * h * 4) as usize);
@@ -107,4 +107,81 @@ fn a_rebuild_caches_every_stale_label_and_counts_to_the_end() {
     }
     assert_eq!((rebuild.done(), rebuild.total()), (6, 6));
     assert!(stale(d.path(), carts.iter()).is_empty());
+}
+
+#[test]
+fn a_rebuild_that_stops_moving_lets_the_shelf_come_up() {
+    let d = tempfile::tempdir().unwrap();
+    let mut cart = cart_with_label(d.path(), [10, 10, 10]);
+    let stuck = d.path().join("Labels/GBA/Stuck.png");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&stuck)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    cart.stem = "Stuck".into();
+    cart.label = Some(stuck);
+    let mut rebuild =
+        Rebuild::start_with_stall(d.path(), vec![cart], std::time::Duration::from_millis(300));
+    let began = std::time::Instant::now();
+    while !rebuild.stalled() {
+        assert!(
+            began.elapsed().as_secs() < 5,
+            "a label read that never returned held the screen"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!rebuild.finished());
+}
+
+#[test]
+fn a_rebuild_that_keeps_moving_is_not_stalled() {
+    let d = tempfile::tempdir().unwrap();
+    let cart = cart_with_label(d.path(), [10, 10, 10]);
+    let mut rebuild =
+        Rebuild::start_with_stall(d.path(), vec![cart], std::time::Duration::from_secs(5));
+    let began = std::time::Instant::now();
+    while !rebuild.finished() {
+        assert!(began.elapsed().as_secs() < 30, "the rebuild never finished");
+        assert!(!rebuild.stalled());
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn ensure_moves_an_existing_system_cache_to_the_root() {
+    let d = tempfile::tempdir().unwrap();
+    let old = d.path().join("System/Cache/Labels/GBA/x.bin");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, b"art").unwrap();
+    slot::root::ensure(d.path());
+    assert_eq!(
+        std::fs::read(d.path().join("Cache/Labels/GBA/x.bin")).unwrap(),
+        b"art"
+    );
+    assert!(!d.path().join("System/Cache").exists());
+}
+
+#[test]
+fn ensure_drops_the_old_cache_when_the_new_one_exists() {
+    let d = tempfile::tempdir().unwrap();
+    let old = d.path().join("System/Cache/Labels/GBA/old.bin");
+    let new = d.path().join("Cache/Labels/GBA/new.bin");
+    for p in [&old, &new] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"art").unwrap();
+    }
+    slot::root::ensure(d.path());
+    assert!(new.is_file());
+    assert!(!d.path().join("Cache/Labels/GBA/old.bin").exists());
+    assert!(!d.path().join("System/Cache").exists());
+}
+
+#[test]
+fn only_a_big_rebuild_takes_the_screen() {
+    let d = tempfile::tempdir().unwrap();
+    let cart = cart_with_label(d.path(), [10, 10, 10]);
+    let batch = |n: usize| Rebuild::start(d.path(), vec![cart.clone(); n]);
+    assert!(!batch(SCREEN_FROM - 1).on_screen());
+    assert!(batch(SCREEN_FROM).on_screen());
 }

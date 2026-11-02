@@ -1,5 +1,5 @@
 use slot_gfx::{Canvas, Draw, TexId, OUT_H};
-use slot_store::{BLUE_LIGHT_MAX, BRIGHTNESS_MAX, VOLUME_MAX};
+use slot_store::{BLUE_LIGHT_MAX, BRIGHTNESS_MAX, SUNLIGHT_MAX, VOLUME_MAX};
 
 use crate::icon::icon_box;
 use crate::toast::toast_rect;
@@ -56,6 +56,7 @@ pub enum HudKind {
     BlueLight,
     Volume,
     Rewind,
+    Sunlight,
 }
 
 impl HudKind {
@@ -69,6 +70,7 @@ impl HudKind {
             HudKind::Volume if value == 0 => Icon::VolumeZero,
             HudKind::Volume => Icon::Volume,
             HudKind::Rewind => Icon::Rewind,
+            HudKind::Sunlight => Icon::Sunlight,
         }
     }
 
@@ -78,6 +80,7 @@ impl HudKind {
             HudKind::BlueLight => BLUE_LIGHT_MAX,
             HudKind::Volume => VOLUME_MAX,
             HudKind::Rewind => 100,
+            HudKind::Sunlight => SUNLIGHT_MAX,
         }
     }
 }
@@ -151,6 +154,7 @@ pub struct Hud {
     ff: FfState,
     said: Option<(Toast, Millis)>,
     alarm: Option<Millis>,
+    alarm_toast: Option<Toast>,
     icons: Vec<TexId>,
     toasts: Vec<TexId>,
     link: LinkBadge,
@@ -170,8 +174,16 @@ impl Hud {
         self.toasts = toasts;
     }
 
+    pub fn toast_tex(&self, toast: Toast) -> Option<TexId> {
+        self.toasts.get(toast.index()).copied()
+    }
+
     pub fn toast(&mut self, toast: Toast, now: Millis) {
         self.said = Some((toast, now));
+    }
+
+    pub fn hush(&mut self) {
+        self.said = None;
     }
 
     pub fn set_alarm(&mut self, on: bool, now: Millis) {
@@ -180,6 +192,15 @@ impl Hud {
             (true, None) => Some(now),
             (false, _) => None,
         };
+    }
+
+    pub fn set_alarm_toast(&mut self, toast: Toast) {
+        self.alarm_toast = Some(toast);
+    }
+
+    pub fn alarm_toast(&self) -> Option<Toast> {
+        self.alarm
+            .map(|_| self.alarm_toast.unwrap_or(Toast::CardUnwritable))
     }
 
     pub fn alarmed(&self) -> bool {
@@ -324,7 +345,7 @@ impl Hud {
             h: ALARM_BAND_H,
             colour: pulse(age),
         });
-        let alarm = Toast::CardUnwritable;
+        let alarm = self.alarm_toast.unwrap_or(Toast::CardUnwritable);
         let Some(tex) = self.toasts.get(alarm.index()).copied() else {
             return;
         };
@@ -389,18 +410,22 @@ impl Hud {
 
     fn toast_alpha(&self, now: Millis) -> f32 {
         match self.said {
-            Some((_, shown)) => fade(shown, now),
+            Some((toast, shown)) => fade_over(shown, now, toast.hold_ms()),
             None => 0.0,
         }
     }
 }
 
 fn fade(shown: Millis, now: Millis) -> f32 {
+    fade_over(shown, now, HUD_MS)
+}
+
+fn fade_over(shown: Millis, now: Millis, hold: Millis) -> f32 {
     let age = now.saturating_sub(shown);
-    if age >= HUD_MS {
+    if age >= hold {
         return 0.0;
     }
-    ((HUD_MS - age) as f32 / FADE_MS as f32).min(1.0)
+    ((hold - age) as f32 / FADE_MS as f32).min(1.0)
 }
 
 fn pulse(age: Millis) -> [f32; 4] {

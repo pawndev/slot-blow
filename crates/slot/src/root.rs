@@ -1,26 +1,37 @@
 use std::path::{Path, PathBuf};
 
-pub const DIRS: [&str; 24] = [
+pub const DIRS: [&str; 35] = [
     "BIOS",
     "Bezels",
+    "Bezels/GBA",
     "Bezels/GB",
     "Bezels/GBC",
+    "Cache",
     "Config",
     "Games",
     "Games/GBA",
+    "Games/GBAV",
     "Games/GB",
     "Games/GBC",
+    "Guides",
+    "Guides/GBA",
+    "Guides/GBAV",
+    "Guides/GB",
+    "Guides/GBC",
     "Labels",
     "Labels/GBA",
+    "Labels/GBAV",
     "Labels/GB",
     "Labels/GBC",
     "Logs",
     "Saves",
     "Saves/GBA",
+    "Saves/GBAV",
     "Saves/GB",
     "Saves/GBC",
     "States",
     "States/GBA",
+    "States/GBAV",
     "States/GB",
     "States/GBC",
     "System",
@@ -31,8 +42,28 @@ pub fn ensure(root: &Path) {
     for sub in DIRS {
         let _ = std::fs::create_dir_all(root.join(sub));
     }
+    move_label_cache(root);
     if let Err(e) = slot_store::move_config(root) {
         eprintln!("slot: config: {e}");
+    }
+}
+
+pub fn move_label_cache(root: &Path) {
+    let old = root.join("System/Cache");
+    let labels = old.join("Labels");
+    let new = root.join("Cache/Labels");
+    if labels.is_dir() && !new.exists() {
+        let _ = std::fs::create_dir_all(root.join("Cache"));
+        let _ = std::fs::rename(&labels, &new);
+    }
+    if old.exists() {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+}
+
+pub fn sweep_temps(root: &Path) {
+    for sub in ["Config", "Saves", "States"] {
+        slot_store::sweep_temps(&root.join(sub));
     }
 }
 
