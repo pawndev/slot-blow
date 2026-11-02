@@ -52,11 +52,11 @@ fn platform(d: &TempDir) -> DevicePlatform {
 fn the_backlight_steps_span_whatever_range_the_kernel_reports() {
     let d = sysfs("255", "87");
     let mut p = platform(&d);
-    p.set_backlight(9);
+    p.set_backlight(10);
     assert_eq!(brightness(&d), 255);
-    p.set_backlight(5);
+    p.set_backlight(6);
     let mid = brightness(&d);
-    assert!((40..=90).contains(&mid), "step 5 of 9 wrote {mid} of 255");
+    assert!((40..=110).contains(&mid), "step 6 of 10 wrote {mid} of 255");
 }
 
 #[test]
@@ -71,13 +71,13 @@ fn step_one_is_the_dimmest_value_the_rg34xx_lights() {
 fn the_steps_follow_the_curve_from_the_floor_to_full() {
     let d = sysfs("255", "87");
     let mut p = platform(&d);
-    let wrote: Vec<u32> = (0..=9)
+    let wrote: Vec<u32> = (0..=10)
         .map(|step| {
             p.set_backlight(step);
             brightness(&d)
         })
         .collect();
-    assert_eq!(wrote, [0, 8, 14, 30, 52, 81, 117, 157, 204, 255]);
+    assert_eq!(wrote, [0, 8, 13, 26, 44, 68, 96, 129, 167, 209, 255]);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn every_step_is_brighter_than_the_one_below() {
     let d = sysfs("255", "87");
     let mut p = platform(&d);
     let mut last = 0;
-    for step in 1..=9 {
+    for step in 1..=10 {
         p.set_backlight(step);
         let now = brightness(&d);
         assert!(now > last, "step {step} wrote {now}, not above {last}");
@@ -99,7 +99,7 @@ fn a_small_range_still_lights_step_one() {
     let mut p = platform(&d);
     p.set_backlight(1);
     assert_eq!(brightness(&d), 1);
-    p.set_backlight(9);
+    p.set_backlight(10);
     assert_eq!(brightness(&d), 10);
 }
 
@@ -212,7 +212,7 @@ fn dispdbg(d: &TempDir, file: &str) -> String {
 fn a_tree_with_no_backlight_class_drives_the_panel_through_dispdbg() {
     let d = dispdbg_tree();
     let mut p = DevicePlatform::probe(d.path(), PathBuf::from("/mnt/sdcard"));
-    p.set_backlight(9);
+    p.set_backlight(10);
     assert_eq!(dispdbg(&d, "name"), "lcd0");
     assert_eq!(dispdbg(&d, "command"), "setbl");
     assert_eq!(
@@ -231,7 +231,7 @@ fn a_backlight_class_still_wins_over_dispdbg() {
     let dbg = d.path().join("kernel/debug/dispdbg");
     fs::create_dir_all(&dbg).unwrap();
     fs::write(dbg.join("param"), "").unwrap();
-    platform(&d).set_backlight(9);
+    platform(&d).set_backlight(10);
     assert_eq!(brightness(&d), 255);
     assert_eq!(dispdbg(&d, "param"), "", "dispdbg was written to as well");
 }
@@ -434,4 +434,77 @@ fn the_kernel_log_keeps_the_latest_card_lines() {
     let kept = slot_power::card_kernel_lines(&dmesg);
     assert_eq!(kept.len(), 40);
     assert_eq!(kept.last().unwrap(), "[99] FAT-fs (mmcblk0p7): line 99");
+}
+
+#[test]
+fn the_card_is_found_with_its_device_and_filesystem() {
+    let m = slot_power::card_mount_in(MOUNTS, Path::new("/mnt/sdcard")).unwrap();
+    assert_eq!(m.device, "/dev/mmcblk0p7");
+    assert_eq!(m.point, Path::new("/mnt/sdcard"));
+    assert_eq!(m.fs, "vfat");
+    let other = slot_power::card_mount_in(MOUNTS, Path::new("/mnt/other/Saves")).unwrap();
+    assert_eq!(other.device, "/dev/mmcblk1p1");
+    assert_eq!(other.point, Path::new("/mnt/other"));
+    assert_eq!(other.fs, "exfat");
+}
+
+#[test]
+fn a_card_on_no_block_device_is_not_one_to_repair() {
+    assert!(slot_power::card_mount_in(MOUNTS, Path::new("/mnt/sdcard/System/slot")).is_none());
+}
+
+#[test]
+fn the_repair_is_staged_off_the_card() {
+    let card = tempfile::tempdir().unwrap();
+    let stage = tempfile::tempdir().unwrap();
+    let system = card.path().join("System");
+    fs::create_dir_all(&system).unwrap();
+    fs::write(system.join("repair.sh"), "#!/bin/sh\n").unwrap();
+    fs::write(system.join("fsck.exfat"), "elf").unwrap();
+    let script = slot_power::stage_repair(card.path(), stage.path()).unwrap();
+    assert_eq!(script, stage.path().join("repair.sh"));
+    assert_eq!(fs::read_to_string(&script).unwrap(), "#!/bin/sh\n");
+    assert_eq!(
+        fs::read_to_string(stage.path().join("fsck.exfat")).unwrap(),
+        "elf"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(stage.path().join("fsck.exfat"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(
+            mode & 0o111,
+            0,
+            "fsck.exfat was staged without its execute bit"
+        );
+    }
+}
+
+#[test]
+fn a_card_without_the_script_cannot_stage_a_repair() {
+    let card = tempfile::tempdir().unwrap();
+    let stage = tempfile::tempdir().unwrap();
+    assert!(slot_power::stage_repair(card.path(), stage.path()).is_err());
+}
+
+#[test]
+fn the_repair_result_is_read_once() {
+    use slot_power::RepairResult;
+    let d = tempfile::tempdir().unwrap();
+    let file = d.path().join("slot-repair.result");
+    assert_eq!(slot_power::take_repair_result(&file), None);
+    for (text, want) in [
+        ("repaired\n", RepairResult::Repaired),
+        ("clean\n", RepairResult::Clean),
+        ("failed\n", RepairResult::Failed),
+        ("busy\n", RepairResult::Failed),
+        ("unsupported\n", RepairResult::Failed),
+    ] {
+        fs::write(&file, text).unwrap();
+        assert_eq!(slot_power::take_repair_result(&file), Some(want), "{text}");
+        assert!(!file.exists(), "{text} was left to be shown again");
+    }
 }

@@ -15,6 +15,8 @@ const STEP_TIMEOUT: Duration = Duration::from_millis(12);
 
 const MARGIN: Duration = Duration::from_micros(1500);
 
+const LOG_SYNC: Duration = Duration::from_secs(1);
+
 struct Pacer {
     last_return: Option<Instant>,
     period: Duration,
@@ -128,6 +130,8 @@ pub fn run() {
     let mut frontend = Frontend::boot_with(Box::new(platform), sink);
     frontend.set_dust(slot::dust::Dust::shaken());
     slot::boot_time::mark("frontend");
+    let target = slot::baseos::var("BASEOS_TARGET").unwrap_or_default();
+    frontend.set_left_stick(slot::input::evdev::has_left_stick(&target));
     frontend.upload_boot_faces(&mut compositor);
     slot::boot_time::mark("faces");
     frontend.upload_bezel(&mut compositor, window);
@@ -137,28 +141,48 @@ pub fn run() {
     let card = root.clone();
     let _ = std::thread::Builder::new()
         .name("slot-bootlogo".into())
-        .spawn(move || slot::bootlogo::refresh(&card));
+        .spawn(move || {
+            slot::bootlogo::refresh(&card);
+            slot::root::sweep_temps(&card);
+        });
+    let _ = std::thread::Builder::new()
+        .name("slot-logsync".into())
+        .spawn(sync_log_writes);
     let mut drawn = false;
     frontend.drive_emulator();
     let mut pacer = Pacer::new();
-    let (mut frames, mut missed, mut early) = (0u32, 0u32, 0u32);
+    let (mut frames, mut missed, mut early, mut stale) = (0u32, 0u32, 0u32, 0u32);
     loop {
         pacer.wait();
         let began = Instant::now();
+        input.steer_with_stick(frontend.app().left_stick_dpad());
         frontend.advance(&mut input);
         if frontend.restarting() {
             frontend.restart();
+        }
+        if frontend.relaunching() {
+            frontend.relaunch();
+            return;
+        }
+        if frontend.repairing() {
+            frontend.repair();
         }
         if frontend.powering_off() {
             frontend.poweroff();
             return;
         }
-        frontend.step_emulator(pacer.period, STEP_TIMEOUT);
+        if slot::crash::stopping() {
+            eprintln!("slot: told to stop, saving first");
+            frontend.stop();
+            return;
+        }
+        let late = frontend.step_emulator(pacer.period, STEP_TIMEOUT);
         frontend.render(&mut compositor, window);
         let swap = Instant::now();
         let work = swap - began;
         if let Err(e) = surface.swap() {
             eprintln!("slot: {e}");
+            frontend.stop();
             return;
         }
         let swap_took = swap.elapsed();
@@ -168,13 +192,14 @@ pub fn run() {
             frames += 1;
             missed += u32::from(dropped);
             early += u32::from(swap_took > pacer.period / 2);
+            stale += u32::from(late);
             if frames == 600 {
                 eprintln!(
-                    "slot: pace: 600 frames, {missed} missed a latch, {early} drawn early, work {:.1} ms, period {:.2} ms",
+                    "slot: pace: 600 frames, {missed} missed a latch, {early} drawn early, {stale} stale, work {:.1} ms, period {:.2} ms",
                     pacer.work.as_secs_f64() * 1e3,
                     pacer.period.as_secs_f64() * 1e3
                 );
-                (frames, missed, early) = (0, 0, 0);
+                (frames, missed, early, stale) = (0, 0, 0, 0);
             }
         }
         if !drawn {
@@ -184,6 +209,24 @@ pub fn run() {
         }
         if let Some(left) = MIN_FRAME.checked_sub(began.elapsed()) {
             std::thread::sleep(left);
+        }
+    }
+}
+
+fn sync_log_writes() {
+    let mut synced = 0;
+    loop {
+        std::thread::sleep(LOG_SYNC);
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(2, &mut st) } != 0 {
+            return;
+        }
+        if st.st_size != synced {
+            #[cfg(target_os = "linux")]
+            unsafe {
+                libc::syncfs(2);
+            }
+            synced = st.st_size;
         }
     }
 }

@@ -38,8 +38,9 @@ fn composed(a: &App, c: &mut Compositor, glitched: &mut Vec<u8>, name: &str) -> 
     c.set_picture(a.picture_rect());
     c.set_game_source_rect(a.source_rect());
     c.set_screen_power(a.screen_power());
-    c.set_overlay_slide(a.overlay_slide());
-    c.begin_frame(a.layout());
+    c.set_screen_footer(a.screen_footer());
+    c.set_game_layout(a.game_layout());
+    c.begin_frame();
     let g = a.glitch().expect("no glitch on a dusty cart");
     glitch(glitched, g.platform, g.seed, g.at, g.puff);
     c.upload_game(glitched);

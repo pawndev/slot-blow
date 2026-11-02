@@ -197,7 +197,7 @@ fn palette(platform: Platform, rng: &mut Rng) -> Vec<[u8; 3]> {
                 [0x10, 0x08, 0x18],
             ]
         }
-        Platform::Gba => {
+        Platform::Gba | Platform::Gbav => {
             let mut p = vec![[0xf8, 0xf8, 0xf8]];
             p.extend((1..16).map(|_| hsv(rng.unit(), 0.5 + 0.5 * rng.unit(), rng.unit())));
             p

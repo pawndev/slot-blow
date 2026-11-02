@@ -114,6 +114,13 @@ pub fn write_retail_header(d: &TempDir, stem: &str, title: &str, code: &str) {
     std::fs::write(rom_path(d, stem), rom).expect("write rom");
 }
 
+pub fn write_hack_header(d: &TempDir, stem: &str, title: &str, code: &str) {
+    write_retail_header(d, stem, title, code);
+    let mut rom = std::fs::read(rom_path(d, stem)).expect("read rom");
+    rom[0xb2] = 0;
+    std::fs::write(rom_path(d, stem), rom).expect("write rom");
+}
+
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -267,6 +274,10 @@ impl Snapshot for CoreSnapshot {
 
     fn load(&self, state: Vec<u8>) {
         self.with(|c| c.unserialize(&state).expect("unserialize"));
+    }
+
+    fn reset(&self) {
+        self.with(|c| c.reset());
     }
 }
 
@@ -578,7 +589,6 @@ pub fn app_playing_with_volume(root: &Path, volume: u8) -> App {
             cart: Some("Emerald".to_string()),
             volume,
             clock_set: true,
-            utc_offset_min: 0,
             ..Default::default()
         },
     )
@@ -591,7 +601,6 @@ pub fn app_playing_with(root: &Path, stem: &str, snapshot: Box<dyn Snapshot>) ->
         SlotState {
             cart: Some(stem.to_string()),
             clock_set: true,
-            utc_offset_min: 0,
             ..Default::default()
         },
     )
@@ -606,4 +615,59 @@ fn seated(root: &Path, snapshot: Box<dyn Snapshot>, state: SlotState) -> App {
         a.update(1.0 / 60.0);
     }
     a
+}
+
+pub fn through(a: &mut App, btn: slot_input::Btn) {
+    let now = a.now();
+    feed_through(a, btn, now, |a, action| a.apply(action));
+}
+
+pub fn through_at(a: &mut App, btn: slot_input::Btn, at: slot_input::Millis) {
+    feed_through(a, btn, at, |a, action| a.apply_at(action, at));
+}
+
+fn feed_through(
+    a: &mut App,
+    btn: slot_input::Btn,
+    now: slot_input::Millis,
+    apply: impl Fn(&mut App, slot_input::Action),
+) {
+    let mut g = slot_input::Gestures::new();
+    g.set_entries(a.binding_table().entries());
+    for ev in [
+        slot_input::RawEvent::Down(btn),
+        slot_input::RawEvent::Up(btn),
+    ] {
+        g.set_context(a.input_context());
+        for action in g.feed(ev, now) {
+            apply(a, action);
+        }
+    }
+}
+
+pub fn connect(a: &mut App) {
+    use slot::wifi::Backend;
+    let mut fake = slot::wifi::Fake::demo();
+    fake.add("Home", "password", false);
+    a.set_wifi(slot::wifi::Wifi::inline(Box::new(fake)));
+    let tick = |a: &mut App| {
+        let t = a.now();
+        a.tick_ms(t + 1_000);
+    };
+    for _ in 0..10 {
+        if a.wifi().held {
+            break;
+        }
+        tick(a);
+    }
+    assert!(a.wifi().held, "the app never held the radio");
+    a.wifi_send(slot::wifi::Cmd::Join {
+        ssid: "Home".into(),
+        password: "password".into(),
+        hidden: false,
+    });
+    for _ in 0..4 {
+        tick(a);
+    }
+    assert!(a.wifi_up(), "the fake network did not connect");
 }

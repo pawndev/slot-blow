@@ -6,9 +6,15 @@ use crate::bitmaps;
 use crate::plate::UndoFace;
 use crate::text;
 
-const WORDMARK_SVG: &str = include_str!("../assets/wordmark.svg");
+const ANBERNIC_PATHS: &str = include_str!("../assets/anbernic.txt");
+const MODEL_GLYPHS: &str = include_str!("../assets/model_glyphs.txt");
 
-const WORDMARK_W: u32 = 250;
+const DEFAULT_MODEL: &str = "RG SP";
+
+const LOCKUP_PAD: f32 = 22.5;
+const LOCKUP_H: f32 = 145.0;
+const MODEL_X: f32 = 778.0955;
+const WORDMARK_PX_PER_UNIT: f32 = 250.0 / 1283.0;
 
 pub const STICKER_W: u32 = 660;
 pub const STICKER_H: u32 = 228;
@@ -32,7 +38,9 @@ const SMALL_PX: f32 = 9.0;
 pub struct StickerFields<'a> {
     pub battery: Option<u8>,
     pub serial: &'a str,
-    pub dirty_digit: char,
+    pub version: &'a str,
+    pub baseos: Option<&'a str>,
+    pub model: &'a str,
 }
 
 pub const CREDITS: [&str; 11] = [
@@ -66,12 +74,25 @@ pub fn head_rows(f: &StickerFields) -> [String; 3] {
     ]
 }
 
+fn split_check(serial: &str) -> (&str, &str) {
+    let at = serial.char_indices().last().map_or(0, |(i, _)| i);
+    serial.split_at(at)
+}
+
+fn version_lines(f: &StickerFields) -> Vec<String> {
+    let mut out = vec![format!("VERSION {}", f.version)];
+    out.extend(f.baseos.map(|v| format!("BASEOS {v}")));
+    out
+}
+
 pub fn sticker_lines(f: &StickerFields) -> Vec<String> {
     let mut out: Vec<String> = head_rows(f).into();
     out.extend(CREDITS.iter().map(|s| s.to_string()));
     out.extend(ORIGIN.iter().map(|s| s.to_string()));
-    out.push(format!("{} {}", f.serial, f.dirty_digit));
+    let (body, check) = split_check(f.serial);
+    out.push(format!("{body} {check}"));
     out.push(COPYRIGHT.to_string());
+    out.extend(version_lines(f));
     out.push(HOME.to_string());
     out
 }
@@ -237,18 +258,27 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
 
     let bars_y = panel_y + 14;
     let bars_h = 62;
-    let payload = format!("SLOT-{}-{}", f.serial, f.dirty_digit);
+    let payload = format!("SLOT-{}", f.serial);
     if let Some(run) = code39(&format!("*{payload}*")) {
         let syms = run.len() as f32 / 9.0;
         let per_sym = 3.0 * CODE39_WIDE + 7.0 * CODE39_NARROW;
         let scale = ((panel_w as f32 - 12.0) / (syms * per_sym + 20.0 * CODE39_NARROW)).min(2.0);
-        let narrow = ((CODE39_NARROW * scale).round() as u32).max(1);
-        let wide = ((CODE39_WIDE * scale).round() as u32).max(narrow * 2);
-        let total: u32 = run
-            .iter()
-            .map(|w| if *w { wide } else { narrow })
-            .sum::<u32>()
-            + (run.len() as u32 / 9) * narrow;
+        let total_for = |narrow: u32, wide: u32| -> u32 {
+            run.iter()
+                .map(|w| if *w { wide } else { narrow })
+                .sum::<u32>()
+                + (run.len() as u32 / 9) * narrow
+        };
+        let top = ((CODE39_NARROW * scale).round() as u32).max(1);
+        let (narrow, wide, total) = (1..=top)
+            .rev()
+            .flat_map(|n| {
+                let w = ((CODE39_WIDE * n as f32).round() as u32).max(n * 2);
+                (n * 2..=w).rev().map(move |w| (n, w))
+            })
+            .map(|(n, w)| (n, w, total_for(n, w)))
+            .find(|&(n, _, t)| t + 20 * n <= panel_w)
+            .unwrap_or((1, 2, total_for(1, 2)));
         let mut x = panel_x + panel_w.saturating_sub(total) / 2;
         for chunk in run.chunks_exact(9) {
             for (n, is_wide) in chunk.iter().enumerate() {
@@ -263,24 +293,19 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
     }
 
     let sy = (bars_y + bars_h + 4) as f32;
-    let hash_w = c.print_measure(f.serial, SERIAL_PX);
+    let (body, check) = split_check(f.serial);
+    let hash_w = c.print_measure(body, SERIAL_PX);
     let box_w = SERIAL_PX * 0.9;
     let total = hash_w + 10.0 + box_w;
     let sx = panel_x as f32 + (panel_w as f32 - total) / 2.0;
-    c.print(sx, sy, f.serial, SERIAL_PX, BLACK);
+    c.print(sx, sy, body, SERIAL_PX, BLACK);
     let bx = sx + hash_w + 10.0;
     c.outline(bx, sy + 1.0, box_w, SERIAL_PX * 1.25, 2.0, BLACK);
-    c.print(
-        bx + box_w * 0.28,
-        sy + 2.0,
-        &f.dirty_digit.to_string(),
-        SERIAL_PX * 0.85,
-        BLACK,
-    );
+    c.print(bx + box_w * 0.28, sy + 2.0, check, SERIAL_PX * 0.85, BLACK);
 
     let mut ry = panel_y as f32 + panel_h as f32 + 10.0;
     let right_edge = (panel_x + panel_w) as f32;
-    if let Some(mark) = wordmark(WORDMARK_W) {
+    if let Some(mark) = wordmark(f.model) {
         let (mw, mh) = mark.1;
         c.blit(
             (right_edge - mw as f32 - 10.0) as u32,
@@ -291,7 +316,12 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
         );
         ry += mh as f32 + 4.0;
     }
-    for line in [COPYRIGHT, HOME] {
+    let lines = [COPYRIGHT.to_string()]
+        .into_iter()
+        .chain(version_lines(f))
+        .chain([HOME.to_string()]);
+    for line in lines {
+        let line = line.as_str();
         let lw = c.print_measure(line, SMALL_PX);
         ry = c.print(right_edge - lw - 10.0, ry, line, SMALL_PX, WHITE);
     }
@@ -303,11 +333,55 @@ pub fn sticker_face(f: &StickerFields) -> UndoFace {
     }
 }
 
-fn wordmark(w: u32) -> Option<(Vec<u8>, (u32, u32))> {
-    let tree = usvg::Tree::from_str(WORDMARK_SVG, &usvg::Options::default()).ok()?;
+fn model_line(model: &str) -> Option<(Vec<(f32, &'static str)>, f32)> {
+    let mut x = 0.0;
+    let mut glyphs = Vec::new();
+    let first = model.split('/').next().unwrap_or_default();
+    for ch in first.trim().to_uppercase().chars() {
+        let (advance, path) = MODEL_GLYPHS.lines().find_map(|line| {
+            let mut cols = line.split('\t');
+            (cols.next()?.chars().eq([ch])).then_some(())?;
+            Some((cols.next()?.parse::<f32>().ok()?, cols.next()?))
+        })?;
+        if !path.is_empty() {
+            glyphs.push((x, path));
+        }
+        x += advance;
+    }
+    (!glyphs.is_empty()).then_some((glyphs, x))
+}
+
+fn wordmark_svg(model: &str) -> String {
+    let (glyphs, advance) = model_line(model)
+        .or_else(|| model_line(DEFAULT_MODEL))
+        .unwrap_or_default();
+    let w = 2.0 * LOCKUP_PAD + MODEL_X + advance;
+    let paths: String = ANBERNIC_PATHS
+        .lines()
+        .map(|d| format!("<path d=\"{d}\"/>"))
+        .chain(glyphs.iter().map(|(x, d)| {
+            format!(
+                "<path transform=\"translate({:.4} 0)\" d=\"{d}\"/>",
+                MODEL_X + x
+            )
+        }))
+        .collect();
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w:.4} {LOCKUP_H}\">\
+         <g transform=\"translate({LOCKUP_PAD} {}) scale(1 -1)\">\
+         <g fill=\"none\" stroke=\"#ffffff\" stroke-width=\"17\" stroke-linejoin=\"round\" stroke-linecap=\"round\">{paths}</g>\
+         <g fill=\"#231f20\">{paths}</g></g></svg>",
+        LOCKUP_H - LOCKUP_PAD
+    )
+}
+
+fn wordmark(model: &str) -> Option<(Vec<u8>, (u32, u32))> {
+    let svg = wordmark_svg(model);
+    let tree = usvg::Tree::from_str(&svg, &usvg::Options::default()).ok()?;
     let size = tree.size();
-    let h = (w as f32 * size.height() / size.width()).round() as u32;
-    Some((render_svg(WORDMARK_SVG, w, h)?, (w, h)))
+    let w = (size.width() * WORDMARK_PX_PER_UNIT).round() as u32;
+    let h = (size.height() * WORDMARK_PX_PER_UNIT).round() as u32;
+    Some((render_svg(&svg, w, h)?, (w, h)))
 }
 
 const STICKER_MARGIN: f32 = 16.0;

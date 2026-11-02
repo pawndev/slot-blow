@@ -18,13 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install zip, cmake and Task
+      - name: Install zip, cmake, Task and Bun
         run: |
           set -eu
           sed -i '/bullseye-security/d' /etc/apt/sources.list
           apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get install -y --no-install-recommends zip cmake
+          apt-get install -y --no-install-recommends zip unzip cmake
           curl -fsSL https://taskfile.dev/install.sh | sh -s -- -b /usr/local/bin
+          curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.2.6"
 
       - name: Build the tree
         run: task dist:device OUT="slot-${GITHUB_REF_NAME}"
@@ -71,7 +72,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.build.outputs.zip }}
@@ -82,10 +89,16 @@ jobs:
           ZIP: ${{ needs.build.outputs.zip }}
         run: |
           set -eu
-          cat > notes.md <<NOTES
-          Unzip and copy the contents of \`slot-${GITHUB_REF_NAME}/\` onto SD2.
-
-          Emulation by mGBA (MPL-2.0) and gpSP (GPL-2.0). Their licences, patches and gpSP's source are in \`System/licenses/\`.
-          NOTES
+          awk -v head="## [${GITHUB_REF_NAME#v}]" '
+            index($0, head) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          test -s notes.md
           gh release create "$GITHUB_REF_NAME" "$ZIP" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md
+
+      - name: Publish versions.json with the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
