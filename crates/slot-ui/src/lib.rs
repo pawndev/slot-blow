@@ -39,6 +39,7 @@ pub mod liner;
 pub mod palette;
 pub mod sticker_curl;
 mod toast;
+mod wear;
 
 pub use art::decode as decode_png;
 pub use backdrop::{
@@ -57,7 +58,7 @@ pub use board::{
     SOCKET_W, TURN_PAD,
 };
 pub use cart::{
-    bare_face, cart_backing, cart_box, cart_face, cart_face_with, cart_interior, cart_shadow, clean_label,
+    bare_face, cart_backing, cart_box, cart_face, cart_face_with, cart_face_worn, cart_interior, cart_shadow, clean_label,
     gb_cart_shadow, gb_label_panel, gb_shell_of, is_clear, label_colour, label_panel, label_size,
     label_tags, label_text, neutral_shell, seated_box, shows_interior, text_label, CartFace, CART_H, CART_W,
     GBC_LABEL_H, GBC_LABEL_W, GBC_LABEL_X, GBC_LABEL_Y, GB_CART_H, GB_CART_W, GB_LABEL_H,
@@ -136,3 +137,4 @@ pub use sticker::{
     CREDITS, DC, HOME, ORIGIN, STICKER_H, STICKER_W,
 };
 pub use toast::{toast_box, toast_face, toast_face_text, toast_rect, Toast};
+pub use wear::{wear_for, wear_label, wear_seed};

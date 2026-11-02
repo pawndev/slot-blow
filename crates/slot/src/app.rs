@@ -7,11 +7,13 @@ use slot_input::{Action, Btn, RawEvent, MENU_DOUBLE_TAP_MS, MUTE_CHORD_MS};
 use slot_power::{Battery, Charge, LedState, LidPolicy, Power, RepairResult};
 use slot_retro::LinkChannel;
 use slot_store::{
-    format_stamp, parse_stamp, read_slot_state, scan, write_slot_state, BezelPick, Blending, Cart,
+    format_stamp, parse_stamp, read_play_times, read_slot_state, scan, write_play_time,
+    write_slot_state, BezelPick, Blending, Cart,
     Core, GbColors, Platform, Recent, Scale, Shader, ShotDir, ShotEntry, SlotState, StateEntry,
     StateRing, Stretch, WallpaperPick, WallpaperTint, BLUE_LIGHT_MAX, BRIGHTNESS_MAX, CONTRAST_MAX,
     FF_SPEEDS, RING_MAX, SATURATION_MAX, SUNLIGHT_MAX, VOLUME_MAX,
 };
+use slot_ui::wear_for;
 use slot_ui::{
     board_from, board_zoom, draw_empty_slot, draw_footer, draw_ground, draw_sticker, ease,
     footer_ink, grown, lid_at, lid_from, lift_of, on_board, repeat_gap, shelf_cart_at, BezelArt,
@@ -77,6 +79,7 @@ const VOLUME_STEP: u8 = 5;
 const AUTOSAVE_MS: Millis = 60_000;
 const RESUME_MS: Millis = 300_000;
 const SETTLED_MS: Millis = 10_000;
+const PLAY_STEP_MS: Millis = 1_000;
 const CARD_CHECK_MS: Millis = 2_000;
 
 const BATTERY_CRITICAL: u8 = 5;
@@ -699,6 +702,10 @@ pub struct App {
     guide: Option<(Guide, PathBuf)>,
     guide_hint_faces: Vec<TexId>,
     guide_help_face: Option<((TexId, u32, u32), TexId)>,
+    played: HashMap<String, u64>,
+    play_mark: Option<Millis>,
+    play_ms: Millis,
+    worn: Vec<(usize, usize)>,
 }
 
 const FACE_AHEAD: i32 = 8;
@@ -1002,6 +1009,10 @@ impl App {
             battery: None,
             last_led: None,
             powering_off: false,
+            played: HashMap::new(),
+            play_mark: None,
+            play_ms: 0,
+            worn: Vec::new(),
         }
     }
 
@@ -1021,6 +1032,7 @@ impl App {
         app.carousel = read_carousel(root);
         app.shortcuts = read_shortcuts(root);
         app.controls = read_controls(root);
+        app.played = read_play_times(root);
         app.restock_recents();
         app.restock_favorites();
         if let Some((at, i)) = app.remembered_seat() {
@@ -1557,6 +1569,7 @@ impl App {
             QuickRow::EjectSave => Some(QuickValue::flag(self.state.eject_save)),
             QuickRow::Turbo => Some(QuickValue::flag(self.state.turbo)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
+            QuickRow::LabelWear => Some(QuickValue::flag(self.state.label_wear)),
             QuickRow::Recents => Some(if self.state.show_recents {
                 QuickValue::Show
             } else {
@@ -1651,7 +1664,8 @@ impl App {
             | QuickRow::ScGuide
             | QuickRow::Controls
             | QuickRow::ControlsShelf
-            | QuickRow::ControlsInGame => None,
+            | QuickRow::ControlsInGame
+            | QuickRow::Experimental => None,
         }
     }
 
@@ -2210,6 +2224,31 @@ impl App {
 
     pub fn face_cart(&self, shelf: usize, index: usize) -> Option<&Cart> {
         self.shelves.get(shelf)?.1.carts.get(index)
+    }
+
+    pub fn cart_wear(&self, stem: &str) -> f32 {
+        if !self.state.label_wear {
+            return 0.0;
+        }
+        wear_for(self.played_secs(stem))
+    }
+
+    fn wear_all(&mut self) {
+        for (at, (_, shelf)) in self.shelves.iter().enumerate() {
+            for (i, cart) in shelf.carts.iter().enumerate() {
+                if wear_for(self.played.get(&cart.stem).copied().unwrap_or(0)) > 0.0 {
+                    self.worn.push((at, i));
+                }
+            }
+        }
+    }
+
+    pub fn played_secs(&self, stem: &str) -> u64 {
+        self.played.get(stem).copied().unwrap_or(0)
+    }
+
+    pub fn take_worn(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.worn)
     }
 
     pub fn set_cart_face(&mut self, shelf: usize, index: usize, tex: TexId) -> Option<TexId> {
@@ -3610,7 +3649,8 @@ impl App {
             | QuickRow::Network
             | QuickRow::Controls
             | QuickRow::ControlsShelf
-            | QuickRow::ControlsInGame => {
+            | QuickRow::ControlsInGame
+            | QuickRow::Experimental => {
                 if let Some(row) = row.child() {
                     let row = row.shown(&self.hidden_rows())[0];
                     self.phase = Phase::QuickMenu { row };
@@ -3637,6 +3677,7 @@ impl App {
             | QuickRow::GbShader
             | QuickRow::GbcShader
             | QuickRow::GbPalette
+            | QuickRow::LabelWear
             | QuickRow::Rumble
             | QuickRow::LeftStick
             | QuickRow::Theme
@@ -3889,6 +3930,10 @@ impl App {
                 s.blending_gb = s.blending_gb.step(&Blending::MGBA, right);
                 self.blending_pending = Some(self.blending_in_play());
             }
+            QuickRow::LabelWear => {
+                s.label_wear = !s.label_wear;
+                self.wear_all();
+            }
             QuickRow::Theme => s.appearance = s.appearance.toggle(),
             QuickRow::WallpaperTint => s.wallpaper_tint = s.wallpaper_tint.step(right),
             QuickRow::ScreenGeneral
@@ -3983,7 +4028,8 @@ impl App {
             | QuickRow::WifiPower
             | QuickRow::Networks
             | QuickRow::CheckUpdates
-            | QuickRow::Server => return,
+            | QuickRow::Server
+            | QuickRow::Experimental => return,
         }
         self.persist();
     }
@@ -4554,6 +4600,7 @@ impl App {
     }
 
     fn timers(&mut self) {
+        self.tally_play();
         self.step_server();
         self.step_net_time();
         self.take_art_events();
@@ -5933,8 +5980,45 @@ impl App {
         };
     }
 
+    fn tally_play(&mut self) {
+        let now = self.now();
+        let counting = matches!(self.phase, Phase::Playing { .. }) && self.game_menu.is_none();
+        if let (true, Some(at)) = (counting, self.play_mark) {
+            self.play_ms += now.saturating_sub(at).min(PLAY_STEP_MS);
+        }
+        self.play_mark = counting.then_some(now);
+    }
+
+    fn bank_play(&mut self, stem: &str) -> Option<u64> {
+        self.tally_play();
+        let secs = self.play_ms / 1000;
+        if secs == 0 || stem.is_empty() {
+            return None;
+        }
+        self.play_ms %= 1000;
+        let was = self.played_secs(stem);
+        let total = was + secs;
+        self.played.insert(stem.to_string(), total);
+        if wear_for(was) != wear_for(total) {
+            self.worn.extend(self.seat_of(stem, Some(self.platform)));
+        }
+        Some(total)
+    }
+
+    fn write_played(&self, stem: &str, total: u64) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        if let Err(e) = write_play_time(root, stem, total) {
+            eprintln!("slot: play time: {e}");
+        }
+    }
+
     fn flush_eject(&mut self, stem: &str) {
         self.settle_saves();
+        if let Some(total) = self.bank_play(stem) {
+            self.write_played(stem, total);
+        }
         let (Some(root), Some(snapshot)) = (&self.root, &self.snapshot) else {
             return;
         };
@@ -9402,13 +9486,26 @@ impl App {
         } else {
             match trusted_sav(snapshot.as_ref(), "autosave") {
                 Some(sav) => (None, Some(sav), "in-game save"),
-                None => return,
+                None => (None, None, "play time"),
             }
         };
         let (root, platform, core, cart) =
             (root.clone(), self.platform, self.core, cart.to_owned());
+        let played = self.bank_play(&cart);
+        let saving = state.is_some() || sav.is_some();
+        if !saving && played.is_none() {
+            return;
+        }
         let failing = self.card_writes.clone();
         let write = move || {
+            if let Some(total) = played {
+                if let Err(e) = write_play_time(&root, &cart, total) {
+                    eprintln!("slot: play time: {e}");
+                }
+            }
+            if !saving {
+                return;
+            }
             let written = persist::flush(
                 &root,
                 platform,
@@ -9435,7 +9532,7 @@ impl App {
         self.settle_saves();
         self.autosave_at = self.now() + AUTOSAVE_MS;
         self.resume_at = self.now() + RESUME_MS;
-        let (Some(root), Some(snapshot), Some(cart)) = (&self.root, &self.snapshot, self.seated())
+        let (Some(_), Some(snapshot), Some(cart)) = (&self.root, &self.snapshot, self.seated())
         else {
             return;
         };
@@ -9444,11 +9541,18 @@ impl App {
             return;
         };
         let (state, sav) = trusted_write(snapshot.as_ref(), state, "flush");
+        let cart = cart.to_owned();
+        if let Some(total) = self.bank_play(&cart) {
+            self.write_played(&cart, total);
+        }
+        let Some(root) = &self.root else {
+            return;
+        };
         let written = persist::flush(
             root,
             self.platform,
             self.core,
-            cart,
+            &cart,
             state.as_deref(),
             sav.as_deref(),
         );

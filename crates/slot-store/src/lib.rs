@@ -16,6 +16,7 @@ mod gba;
 mod guides;
 pub mod ini;
 mod platform;
+mod play_time;
 mod ring;
 mod scan;
 mod shots;
@@ -41,6 +42,7 @@ pub use guides::{
     GUIDE_SPOTS_FILE,
 };
 pub use platform::Platform;
+pub use play_time::{read_play_times, write_play_time, PLAY_TIME_FILE};
 pub use ring::{is_stamp, StateEntry, StateRing, RING_MAX};
 pub use scan::{initial, is_hidden, listing, scan, scan_platform, sort_key, Cart, StoreError};
 pub use shots::{shot_stamp, ShotDir, ShotEntry, SCREENSHOTS_DIR};
