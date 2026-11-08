@@ -1,5 +1,5 @@
 use crate::draw::{Draw, Sprites, TexId};
-use crate::grade::{blue_light_gain, contrast_boost, saturation_boost};
+use crate::grade::{blue_light_gain, contrast_boost, dim_gain, saturation_boost};
 use crate::pipeline::GamePass;
 use crate::quad::Quad;
 use crate::shaders::{BLIT_FRAG, BLIT_VERT, TURN_VERT};
@@ -26,6 +26,7 @@ pub struct Compositor {
     u_contrast: gl::types::GLint,
     u_blit_uv: gl::types::GLint,
     gain: [f32; 3],
+    dim: f32,
     saturation: f32,
     contrast: f32,
     shake: f32,
@@ -35,6 +36,10 @@ pub struct Compositor {
     game: GamePass,
     sprites: Sprites,
     game_bezel: Option<TexId>,
+    overlay: Option<crate::overlay::Overlay>,
+    overlay_pass: crate::overlay::OverlayPass,
+    overlay_full_drawn: bool,
+    placeholder: Option<[f32; 4]>,
     sp_frame: bool,
     game_panel: bool,
     turn: Option<Turn>,
@@ -83,6 +88,7 @@ impl Compositor {
                 u_contrast,
                 u_blit_uv,
                 gain: blue_light_gain(0),
+                dim: dim_gain(0),
                 saturation: saturation_boost(0),
                 contrast: contrast_boost(0),
                 shake: 0.0,
@@ -92,6 +98,10 @@ impl Compositor {
                 game: GamePass::new()?,
                 sprites: Sprites::new()?,
                 game_bezel: None,
+                overlay: None,
+                overlay_pass: crate::overlay::OverlayPass::new()?,
+                overlay_full_drawn: false,
+                placeholder: None,
                 sp_frame: true,
                 game_panel: false,
                 turn: None,
@@ -136,7 +146,9 @@ impl Compositor {
                 Draw::Game => {
                     self.sprites.draw(&items[from..i], &self.quad);
                     self.in_game_rect(|c| {
+                        c.draw_placeholder_bezel();
                         c.game.draw(&c.quad);
+                        c.draw_overlay();
                         if c.panel_bezel().is_none() {
                             c.draw_game_bezel();
                         }
@@ -148,7 +160,10 @@ impl Compositor {
                 Draw::Shot { tex } => {
                     self.sprites.draw(&items[from..i], &self.quad);
                     if let Some(tex) = self.sprites.source(tex) {
-                        self.in_game_rect(|c| c.game.draw_still(tex, &c.quad));
+                        self.in_game_rect(|c| {
+                            c.game.draw_still(tex, &c.quad);
+                            c.draw_overlay();
+                        });
                     }
                 }
                 Draw::Capture => {
@@ -179,8 +194,20 @@ impl Compositor {
         self.sprites.update_texture(id, w, h, rgba);
     }
 
+    pub fn grade(&self) -> crate::grade::ColorGrade {
+        crate::grade::ColorGrade {
+            gain: self.gain.map(|g| g * self.dim),
+            saturation: self.saturation,
+            contrast: self.contrast,
+        }
+    }
+
     pub fn set_blue_light(&mut self, step: u8) {
         self.gain = blue_light_gain(step);
+    }
+
+    pub fn set_dim(&mut self, step: u8) {
+        self.dim = dim_gain(step);
     }
 
     pub fn set_saturation(&mut self, step: u8) {
@@ -199,8 +226,41 @@ impl Compositor {
         self.game.set_picture(rect);
     }
 
+    pub fn set_overlay(&mut self, overlay: Option<crate::overlay::Overlay>) {
+        self.overlay = overlay;
+    }
+
+    fn draw_overlay(&mut self) {
+        let Some(overlay) = self.overlay.filter(|_| self.screen >= 1.0) else {
+            return;
+        };
+        if let Some(tex) = overlay
+            .full
+            .filter(|_| !self.overlay_full_drawn)
+            .and_then(|(id, _, _)| self.sprites.source(id))
+        {
+            self.overlay_pass.draw_full(tex, self.size, &self.quad);
+            self.overlay_full_drawn = true;
+        }
+        if let Some((tex, w, h)) = overlay
+            .tile
+            .and_then(|(id, w, h)| Some((self.sprites.source(id)?, w, h)))
+        {
+            let [x, y, pw, ph] = self.game.picture_out();
+            let [sx, sy] = self.game.fbo_scale();
+            let [ox, oy] = self.game.origin();
+            let top = self.size.1 as f32 - oy - sy * OUT_H as f32;
+            let px = [ox + x * sx, top + y * sy, pw * sx, ph * sy];
+            self.overlay_pass.draw_tile(tex, (w, h), px, self.size, &self.quad);
+        }
+    }
+
     pub fn set_game_bezel(&mut self, tex: Option<TexId>) {
         self.game_bezel = tex;
+    }
+
+    pub fn set_placeholder_bezel(&mut self, colour: Option<[f32; 4]>) {
+        self.placeholder = colour;
     }
 
     pub fn set_sp_frame(&mut self, on: bool) {
@@ -210,6 +270,17 @@ impl Compositor {
     pub fn set_game_layout(&mut self, layout: crate::GameLayout) {
         self.game_panel = layout.panel;
         self.game.set_layout(layout.rect);
+    }
+
+    fn draw_placeholder_bezel(&mut self) {
+        let Some(colour) = self.placeholder else {
+            return;
+        };
+        let (x, y, w, h) = self.game.frame();
+        self.sprites.set_target(Canvas::FRAMED);
+        self.sprites
+            .draw(&[Draw::Rect { x, y, w, h, colour }], &self.quad);
+        self.sprites.set_target(Canvas::of(self.window));
     }
 
     fn draw_game_bezel(&mut self) {
@@ -238,11 +309,11 @@ impl Compositor {
 
     pub fn fit(&mut self, window: (u32, u32)) {
         self.window = window;
-        self.resize(canvas_size(window));
+        self.resize(frame_size_for(window));
     }
 
     fn native(&self) -> bool {
-        crate::bezel::framed(self.window)
+        crate::layout::fills(self.window)
     }
 
     fn resize(&mut self, size: (u32, u32)) {
@@ -364,12 +435,8 @@ impl Compositor {
     }
 
     pub fn begin_frame(&mut self) {
-        let size = if self.native() {
-            self.window
-        } else {
-            canvas_size(self.window)
-        };
-        self.resize(size);
+        self.overlay_full_drawn = false;
+        self.resize(frame_size_for(self.window));
         self.sprites.set_target(Canvas::of(self.window));
         self.game.set_fbo_scale(
             self.size.0 as f32 / OUT_W as f32,
@@ -436,7 +503,8 @@ impl Compositor {
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.blit);
             gl::ActiveTexture(gl::TEXTURE0);
-            gl::Uniform3f(self.u_gain, self.gain[0], self.gain[1], self.gain[2]);
+            let [r, g, b] = self.gain.map(|g| g * self.dim);
+            gl::Uniform3f(self.u_gain, r, g, b);
             gl::Uniform1f(self.u_saturation, self.saturation);
             gl::Uniform1f(self.u_contrast, self.contrast);
             gl::BindTexture(gl::TEXTURE_2D, self.tex);
@@ -475,12 +543,12 @@ impl Compositor {
 
 impl Compositor {
     fn in_game_rect(&mut self, draw: impl FnOnce(&mut Self)) {
-        if !self.native() {
+        if !crate::bezel::framed(self.window) {
             return draw(self);
         }
         let (x, top, w, h) = match self.game_panel {
-            true => (0, 0, self.window.0 as i32, self.window.1 as i32),
-            false => crate::bezel::game_rect(self.window, self.sp_frame),
+            true => (0, 0, self.size.0 as i32, self.size.1 as i32),
+            false => crate::bezel::game_rect(self.size, self.sp_frame),
         };
         self.game
             .set_fbo_scale(w as f32 / OUT_W as f32, h as f32 / OUT_H as f32);
@@ -503,6 +571,13 @@ impl Compositor {
         }
         self.quad.draw();
     }
+}
+
+fn frame_size_for(window: (u32, u32)) -> (u32, u32) {
+    if !crate::layout::fills(window) {
+        return canvas_size(window);
+    }
+    crate::layout::panel_pixels(window)
 }
 
 pub fn canvas_size(window: (u32, u32)) -> (u32, u32) {

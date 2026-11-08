@@ -137,6 +137,10 @@ impl Session {
         &self.app
     }
 
+    pub fn ring(&self) -> std::sync::Arc<crate::audio::Ring> {
+        self.sink.ring()
+    }
+
     pub fn app_mut(&mut self) -> &mut App {
         &mut self.app
     }
@@ -153,9 +157,13 @@ impl Session {
     }
 
     pub fn step_emulator(&self, present: Duration, timeout: Duration) -> bool {
-        self.emu.as_ref().is_some_and(|emu| {
-            emu.tick(present);
-            !emu.wait_frame(timeout) && emu.locked()
+        let ahead = crate::ds_view::playing(self);
+        self.emu.as_ref().is_some_and(|emu| match ahead {
+            true => emu.step_ahead(present, timeout),
+            false => {
+                emu.tick(present);
+                !emu.wait_frame(timeout) && emu.locked()
+            }
         })
     }
 
@@ -336,7 +344,9 @@ impl Session {
         let mut recoloured = false;
         if let Some(p) = self.app.take_gb_colors() {
             if let Some(emu) = &self.emu {
-                emu.set_option("mgba_gb_colors", p.core_name());
+                for (key, value) in crate::core::palette_options(self.app.core(), p) {
+                    emu.set_option(key, value);
+                }
                 recoloured = true;
             }
         }
@@ -380,6 +390,7 @@ impl Session {
                 self.app.peer_lost();
             }
         }
+        self.sink.ring().set_awake(self.app.expects_sound());
         if let Some(sfx) = self.app.take_sfx() {
             self.play_sfx(sfx);
         }
@@ -549,7 +560,11 @@ impl Session {
             Some(CoreState::Loading) => {}
             Some(CoreState::Ready) => {
                 if let (true, Some(emu)) = (self.app.palette_live(), &self.emu) {
-                    emu.set_option("mgba_gb_colors", self.app.gb_colors().core_name());
+                    for (key, value) in
+                        crate::core::palette_options(self.app.core(), self.app.gb_colors())
+                    {
+                        emu.set_option(key, value);
+                    }
                 }
                 self.app.on_core_ready()
             }
@@ -569,7 +584,7 @@ impl Session {
         else {
             return;
         };
-        let core = slot_store::core_for_platform(&self.root, stem, platform);
+        let core = slot_store::core_for_platform(&self.root, stem, platform, self.app.gb_core());
         launch(&format!("opening {stem} on {}", core.as_str()));
         self.app.set_core(core);
         self.app.set_platform(platform);

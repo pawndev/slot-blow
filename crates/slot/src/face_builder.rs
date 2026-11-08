@@ -1,13 +1,14 @@
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use slot_store::Cart;
-use slot_ui::{
-    board_face, cart_face_worn, cart_interior, cover, gb_shell_of, label_size, padded, CartFace,
-    TURN_PAD,
-};
+use slot_store::{Cart, Platform};
+use slot_ui::{board_face, cart_face_worn, cart_interior, padded, CartFace, TURN_PAD};
+
+use crate::label_cache::label_art;
 
 pub struct BuiltFaces {
+    pub platform: Platform,
     pub stem: String,
     pub wear: f32,
     pub interior: CartFace,
@@ -21,7 +22,7 @@ pub struct FaceBuilder {
 }
 
 impl FaceBuilder {
-    pub fn spawn() -> Self {
+    pub fn spawn(root: PathBuf) -> Self {
         let (requests, inbox) = mpsc::channel::<(Cart, f32)>();
         let (outbox, built) = mpsc::channel();
         let spawned = thread::Builder::new()
@@ -32,22 +33,16 @@ impl FaceBuilder {
                         job = newer;
                     }
                     let (cart, wear) = job;
-                    let (lw, lh) = label_size(&cart);
-                    let art = cart.label.as_deref().and_then(|p| cover(p, lw, lh));
                     let faces = BuiltFaces {
+                        platform: cart.platform,
                         stem: cart.stem.clone(),
                         wear,
-                        interior: if gb_shell_of(&cart).is_none() {
-                            cart_interior(&cart)
-                        } else {
-                            CartFace {
-                                rgba: vec![0; 4],
-                                w: 1,
-                                h: 1,
-                            }
-                        },
+                        interior: cart_interior(&cart),
                         board: board_face(&cart),
-                        lid: padded(&cart_face_worn(&cart, art, wear), TURN_PAD),
+                        lid: padded(
+                            &cart_face_worn(&cart, label_art(&root, &cart), wear),
+                            TURN_PAD,
+                        ),
                     };
                     if outbox.send(faces).is_err() {
                         return;

@@ -9,11 +9,12 @@ use sha2::{Digest, Sha256};
 
 pub const STAGING: &str = "System.new";
 pub const MANIFEST: &str = ".manifest";
-const REQUIRED: [&str; 4] = [
+const REQUIRED: [&str; 5] = [
     "slot",
     "launch_frontend.sh",
     "mgba_libretro.so",
     "gpsp_libretro.so",
+    "gambatte_libretro.so",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +54,29 @@ pub enum UpdateFail {
     Rejected(String),
 }
 
-pub fn parse_release(json: &str) -> Result<Release, UpdateFail> {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Device {
+    H700,
+    RgDsPlus,
+}
+
+impl Device {
+    pub fn of_target(target: &str) -> Device {
+        match target {
+            "rgdsplus" => Device::RgDsPlus,
+            _ => Device::H700,
+        }
+    }
+
+    fn zip_suffix(self) -> &'static str {
+        match self {
+            Device::H700 => "h700",
+            Device::RgDsPlus => "rgdsplus",
+        }
+    }
+}
+
+pub fn parse_release(json: &str, device: Device) -> Result<Release, UpdateFail> {
     let v: serde_json::Value = serde_json::from_str(json).map_err(|_| UpdateFail::Bad)?;
     let stable = &v["stable"];
     let version = stable["version"]
@@ -61,12 +84,16 @@ pub fn parse_release(json: &str) -> Result<Release, UpdateFail> {
         .ok_or(UpdateFail::Bad)?
         .to_string();
     let tag = stable["tag"].as_str().ok_or(UpdateFail::Bad)?;
-    let zip = stable["zip"].as_str().ok_or(UpdateFail::Bad)?;
-    if zip != format!("slot-v{version}-h700.zip") {
+    let asset = match device {
+        Device::H700 => stable,
+        Device::RgDsPlus => &stable["rgdsplus"],
+    };
+    let zip = asset["zip"].as_str().ok_or(UpdateFail::Bad)?;
+    if zip != format!("slot-v{version}-{}.zip", device.zip_suffix()) {
         return Err(UpdateFail::Bad);
     }
-    let size = stable["size"].as_u64().ok_or(UpdateFail::Bad)?;
-    let sha256 = stable["sha256"]
+    let size = asset["size"].as_u64().ok_or(UpdateFail::Bad)?;
+    let sha256 = asset["sha256"]
         .as_str()
         .and_then(hex32)
         .ok_or(UpdateFail::Bad)?;
@@ -277,7 +304,7 @@ impl<R: Read> Read for Stoppable<R> {
 
 pub const WIFI_CONF: &str = "Config/wifi.conf";
 pub const LATEST: &str = "https://slot-cfw.fyi/versions.json";
-const RELEASES: &str = "https://github.com/BrandonKowalski/slot/releases/download";
+const RELEASES: &str = "https://github.com/slot-cfw/slot/releases/download";
 const BASEOS_RELEASES: &str = "https://github.com/pvaibhav/BaseOS/releases/download";
 
 #[derive(Debug, Clone, Copy)]
@@ -336,7 +363,8 @@ pub fn check_with(
         Ok(body) => body,
         Err(e) => return UpdateEvent::Failed(e),
     };
-    let slot = match parse_release(&body) {
+    let device = Device::of_target(running.baseos.map_or("", |(target, _)| target));
+    let slot = match parse_release(&body, device) {
         Ok(r) => Release {
             running: running.slot.to_string(),
             ..r
@@ -721,7 +749,7 @@ pub(crate) fn wait_online() -> Result<(), UpdateFail> {
     Ok(())
 }
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(feature = "device")]
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const API_TIMEOUT: Duration = Duration::from_secs(15);

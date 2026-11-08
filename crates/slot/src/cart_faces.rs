@@ -53,9 +53,9 @@ impl Building {
         self.outdated.remove(&key);
     }
 
-    fn finish(&mut self, key: Key) -> bool {
-        self.carts.remove(&key);
-        !self.outdated.remove(&key)
+    fn finish(&mut self, key: Key, seated: Option<&Cart>) -> bool {
+        let built = self.carts.remove(&key);
+        !self.outdated.remove(&key) && built.as_ref().map(|(cart, _)| cart) == seated
     }
 }
 
@@ -155,7 +155,7 @@ impl CartFaces {
         interior: Option<CartFace>,
     ) {
         self.asked.retain(|w| (w.shelf, w.index) != key);
-        if !self.building.finish(key) {
+        if !self.building.finish(key, app.face_cart(key.0, key.1)) {
             return;
         }
         self.worn.retain(|k| *k != key);
@@ -191,6 +191,7 @@ fn work(queue: &Shared, outbox: &Sender<Built>, root: &Path) {
                 q = wake.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
+        slot_store::header_index::verify(&cart.rom);
         let face = cart_face_worn(&cart, label_art(root, &cart), wear);
         let interior = shows_interior(&cart).then(|| cart_interior(&cart));
         if outbox.send((key, face, interior)).is_err() {
@@ -224,9 +225,9 @@ mod tests {
         new.label = Some("new.png".into());
         assert!(b.start((0, 0), &old, 0.0));
         assert!(!b.start((0, 0), &new, 0.0));
-        assert!(!b.finish((0, 0)));
+        assert!(!b.finish((0, 0), Some(&new)));
         assert!(b.start((0, 0), &new, 0.0));
-        assert!(b.finish((0, 0)));
+        assert!(b.finish((0, 0), Some(&new)));
     }
 
     #[test]
@@ -234,9 +235,9 @@ mod tests {
         let mut b = Building::default();
         assert!(b.start((0, 0), &cart("A"), 0.0));
         assert!(!b.start((0, 0), &cart("A"), 0.5));
-        assert!(!b.finish((0, 0)));
+        assert!(!b.finish((0, 0), Some(&cart("A"))));
         assert!(b.start((0, 0), &cart("A"), 0.5));
-        assert!(b.finish((0, 0)));
+        assert!(b.finish((0, 0), Some(&cart("A"))));
     }
 
     #[test]
@@ -244,6 +245,15 @@ mod tests {
         let mut b = Building::default();
         assert!(b.start((0, 0), &cart("A"), 0.0));
         assert!(!b.start((0, 0), &cart("A"), 0.0));
-        assert!(b.finish((0, 0)));
+        assert!(b.finish((0, 0), Some(&cart("A"))));
+    }
+
+    #[test]
+    fn a_face_whose_seat_now_holds_another_cart_is_thrown_away() {
+        let mut b = Building::default();
+        assert!(b.start((3, 0), &cart("A"), 0.0));
+        assert!(!b.finish((3, 0), Some(&cart("B"))));
+        assert!(b.start((3, 1), &cart("A"), 0.0));
+        assert!(!b.finish((3, 1), None));
     }
 }

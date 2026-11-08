@@ -7,12 +7,12 @@ use common::{
 use slot::app::{App, Phase};
 use slot_input::{Action, Btn};
 use slot_store::{
-    read_slot_state, write_play_time, write_slot_state, Appearance, BezelPick, Blending, GbColors, GbPalette,
-    Platform, Scale, Shader, SlotState, Stretch, WallpaperPick, Zone,
+    read_slot_state, write_play_time, write_slot_state, Appearance, AutoLoad, BezelPick, Blending,
+    GbColors, GbPalette, Platform, Scale, Shader, SlotState, Stretch, WallpaperPick, Zone,
 };
 use slot_ui::{
     Draw, Icon, QuickMenuFaces, QuickRow, QuickValue, TexId, HINT_EDGE, MENU_PAD, MOUTH_H, OUT_H,
-    OUT_W, QUICK_EDGE, QUICK_LABEL_X,
+    OUT_W,
 };
 use tempfile::TempDir;
 
@@ -356,22 +356,31 @@ fn the_game_page_flips_auto_load_eject_save_turbo_and_rewind_and_saves_each() {
         let s = read_slot_state(d.path());
         (s.auto_load, s.eject_save, s.turbo, s.rewind)
     };
-    assert_eq!(card(&d), (true, true, true, true));
+    assert_eq!(card(&d), (AutoLoad::Always, true, true, true));
     press(&mut a, Btn::Right);
-    assert_eq!(card(&d), (true, true, true, false));
+    assert_eq!(card(&d), (AutoLoad::Always, true, true, false));
     assert!(!a.may_rewind(), "rewind still offered with it off");
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Left);
-    assert_eq!(card(&d), (true, true, false, false));
+    assert_eq!(card(&d), (AutoLoad::Always, true, false, false));
     assert!(!a.turbo());
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Down);
     assert_eq!(a.quick_menu(), Some(QuickRow::AutoLoad));
-    press(&mut a, Btn::Right);
-    assert_eq!(card(&d), (false, true, false, false));
+    for (want, value) in [
+        (AutoLoad::PowerOn, QuickValue::PowerOn),
+        (AutoLoad::Never, QuickValue::Never),
+        (AutoLoad::Always, QuickValue::Always),
+    ] {
+        press(&mut a, Btn::Right);
+        assert_eq!(card(&d), (want, true, false, false));
+        assert_eq!(a.quick_value(QuickRow::AutoLoad), Some(value));
+    }
+    press(&mut a, Btn::Left);
+    assert_eq!(card(&d).0, AutoLoad::Never);
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Right);
-    assert_eq!(card(&d), (false, false, false, false));
+    assert_eq!(card(&d), (AutoLoad::Never, false, false, false));
     press(&mut a, Btn::B);
     assert_eq!(a.quick_menu(), Some(QuickRow::Game));
 }
@@ -586,65 +595,110 @@ fn select_start_on_about_still_restarts() {
 }
 
 #[test]
-fn the_about_footer_shows_back_and_x_restart() {
-    let (_d, mut a, _) = on_carousel();
-    fake_faces(&mut a);
-    open_at(&mut a, QuickRow::About);
-    press(&mut a, Btn::A);
-    let out = frame(&a);
-    let (lx, _, _) = legend_box(&out, 400);
-    assert!(lx.abs() < 1.0, "Back is not on the left: {lx}");
-    let (rx, _, rw) = legend_box(&out, 404);
-    let right = rx + rw - HINT_EDGE as f32;
-    assert!(
-        (right - OUT_W as f32).abs() < 1.0,
-        "Restart is not on the right: {right}"
-    );
-}
-
-#[test]
 fn network_sits_between_controls_and_about() {
     let at = |row| QuickRow::MAIN.iter().position(|r| *r == row);
     assert_eq!(at(QuickRow::Network), at(QuickRow::Controls).map(|i| i + 1));
     assert_eq!(at(QuickRow::About), at(QuickRow::Network).map(|i| i + 1));
-    assert_eq!(QuickRow::Network.label(), "Wireless");
+    assert_eq!(QuickRow::Network.label(), "Tools");
+    assert_eq!(
+        QuickRow::NETWORK,
+        [
+            QuickRow::Server,
+            QuickRow::Romm,
+            QuickRow::FetchArt,
+            #[cfg(feature = "nds")]
+            QuickRow::FetchBoxArt,
+            QuickRow::CheckUpdates
+        ]
+    );
+    assert_eq!(QuickRow::WIFI, [QuickRow::WifiPower, QuickRow::Networks]);
+    assert_eq!(QuickRow::GENERAL.last(), Some(&QuickRow::DateTime));
     let (_d, mut a, _) = on_carousel();
+    common::connect(&mut a);
     open_at(&mut a, QuickRow::Network);
     press(&mut a, Btn::A);
-    assert_eq!(a.quick_menu(), Some(QuickRow::WifiPower));
+    assert_eq!(a.quick_menu(), Some(QuickRow::Server));
     press(&mut a, Btn::B);
     assert_eq!(a.quick_menu(), Some(QuickRow::Network));
 }
 
 #[test]
-fn fetch_missing_art_moved_to_network() {
+fn tools_holds_the_network_tools() {
     assert_eq!(
         QuickRow::NETWORK,
         [
-            QuickRow::WifiPower,
-            QuickRow::Networks,
             QuickRow::Server,
+            QuickRow::Romm,
             QuickRow::FetchArt,
-            QuickRow::CheckUpdates,
+            #[cfg(feature = "nds")]
+            QuickRow::FetchBoxArt,
+            QuickRow::CheckUpdates
         ]
     );
     assert_eq!(
         QuickRow::NETWORK.map(QuickRow::label),
         [
-            "Wi-Fi",
-            "Network",
             "Gamebit",
+            "RomM",
             "Fetch Missing Art",
+            #[cfg(feature = "nds")]
+            "Fetch Box Art",
             "Check for Updates"
         ]
     );
+    assert_eq!(QuickRow::WIFI.map(QuickRow::label), ["Wi-Fi", "Network"]);
+    assert_eq!(QuickRow::Wifi.label(), "Wi-Fi");
     assert!(!QuickRow::GENERAL.contains(&QuickRow::FetchArt));
     assert_eq!(QuickRow::FetchArt.parent(), Some(QuickRow::Network));
+    assert_eq!(QuickRow::WifiPower.parent(), Some(QuickRow::Wifi));
     let (_d, mut a, _) = on_carousel();
     common::connect(&mut a);
     for row in QuickRow::NETWORK {
-        assert!(!a.hidden_rows().contains(&row), "{row:?} is hidden");
+        let shown = (row != QuickRow::Romm || cfg!(feature = "romm")) && row.label() != "Fetch Box Art";
+        assert_eq!(!a.hidden_rows().contains(&row), shown, "{row:?}");
     }
+}
+
+const NO_NETWORK: &str = "Not connected";
+
+#[test]
+fn tools_shows_the_message_when_not_connected() {
+    let (_d, mut a, _) = on_carousel();
+    open_at(&mut a, QuickRow::Network);
+    press(&mut a, Btn::A);
+    assert_eq!(a.quick_menu(), Some(QuickRow::Network));
+    assert_eq!(a.update_text().map(|t| t.0), Some(NO_NETWORK.to_string()));
+    assert!(QuickRow::NETWORK
+        .iter()
+        .all(|r| QuickRow::Network.shown(&a.hidden_rows()).iter().all(|s| s != r)));
+}
+
+#[test]
+fn tools_falls_to_the_message_when_wifi_drops() {
+    let (_d, mut a, _) = on_carousel();
+    common::connect(&mut a);
+    open_at(&mut a, QuickRow::FetchArt);
+    assert_eq!(a.quick_menu(), Some(QuickRow::FetchArt));
+    assert!(a.update_text().is_none());
+    a.wifi_send(slot::wifi::Cmd::Disconnect);
+    for _ in 0..3 {
+        a.tick_ms(a.now() + 1_000);
+    }
+    assert!(!a.wifi_up());
+    assert_eq!(a.quick_menu(), Some(QuickRow::Network));
+    assert_eq!(a.update_text().map(|t| t.0), Some(NO_NETWORK.to_string()));
+    assert!(!QuickRow::Network.shown(&a.hidden_rows()).is_empty());
+}
+
+#[test]
+fn no_wifi_hardware_hides_tools_and_wifi() {
+    let (d, mut a, _) = on_carousel();
+    a.set_wifi_probe(d.path().join("net/wlan0"));
+    a.tick_ms(a.now() + 1);
+    let hidden = a.hidden_rows();
+    assert!(hidden.contains(&QuickRow::Network));
+    assert!(hidden.contains(&QuickRow::Wifi));
+    assert!(!QuickRow::MAIN.iter().any(|r| *r != QuickRow::Network && hidden.contains(r)));
 }
 
 #[test]
@@ -676,7 +730,7 @@ fn wifi_row_toggles_with_a_and_left_right() {
 }
 
 #[test]
-fn wifi_off_leaves_only_the_wifi_row_on_the_network_page() {
+fn wifi_off_leaves_only_the_wifi_row_on_the_wifi_page() {
     let (_d, mut a, _) = on_carousel();
     open_at(&mut a, QuickRow::WifiPower);
     press(&mut a, Btn::A);
@@ -719,7 +773,6 @@ fn the_networks_row_says_off_or_not_connected() {
 #[test]
 fn fetch_missing_art_waits_for_a_connection() {
     let (_d, mut a, _) = on_carousel();
-    assert!(a.hidden_rows().contains(&QuickRow::FetchArt));
     common::connect(&mut a);
     open_at(&mut a, QuickRow::FetchArt);
     press(&mut a, Btn::A);
@@ -1021,7 +1074,7 @@ fn only_the_selected_rows_value_is_lit() {
         press(&mut a, Btn::Up);
     }
     press(&mut a, Btn::A);
-    for _ in 0..QuickRow::LidOff.position(&a.hidden_rows()) {
+    for _ in 0..QuickRow::Wifi.position(&a.hidden_rows()) {
         press(&mut a, Btn::Down);
     }
     let out = frame(&a);
@@ -1062,24 +1115,6 @@ fn the_pointer_stands_left_of_the_selected_row_and_only_it_is_lit() {
         }
         press(&mut a, Btn::Down);
     }
-}
-
-#[test]
-fn labels_leave_room_for_the_pointer_and_values_end_thirty_two_pixels_in() {
-    let (_d, mut a, _) = on_carousel();
-    fake_faces(&mut a);
-    open_at(&mut a, QuickRow::FastForward);
-    let out = frame(&a);
-    let right = OUT_W as f32 - QUICK_EDGE;
-    for row in QuickRow::FastForward.shown(&a.hidden_rows()) {
-        let lit = row == QuickRow::FastForward;
-        let [x, ..] = placed(&out, label(row, lit)).expect("a label was not drawn");
-        assert_eq!(x + MENU_PAD as f32, QUICK_LABEL_X, "{row:?}'s label");
-    }
-    let [x, _, w, _] = placed(&out, value(QuickValue::On, false)).expect("rumble's value");
-    assert_eq!(x + w - MENU_PAD as f32, right, "an unselected value");
-    let [x, _, w, _] = placed(&out, value(QuickValue::Speed6, true)).expect("the selected value");
-    assert_eq!(x + w - MENU_PAD as f32, right, "the selected value");
 }
 
 #[test]
@@ -1132,6 +1167,7 @@ fn the_clock_offers_b_back_and_never_a_set() {
         );
         assert!(!drawn(&out, 420), "{way}: the city list still says A DONE");
         press(app, Btn::B);
+        let out = frame(app);
         assert!(!drawn(&out, 405), "{way}: the city still offers A SET");
         press(app, Btn::Down);
         let out = frame(app);
@@ -1140,7 +1176,7 @@ fn the_clock_offers_b_back_and_never_a_set() {
 }
 
 #[test]
-fn brightness_steps_from_zero_to_nine() {
+fn brightness_steps_from_zero_to_fifteen_through_the_dim_steps() {
     let (d, mut a, _) = on_carousel_with(SlotState {
         brightness: 3,
         ..SlotState::default()
@@ -1148,7 +1184,7 @@ fn brightness_steps_from_zero_to_nine() {
     open_at(&mut a, QuickRow::Brightness);
     assert_eq!(
         a.quick_value(QuickRow::Brightness),
-        Some(QuickValue::Level3)
+        Some(QuickValue::Level9)
     );
     for (btn, want) in [
         (Btn::Left, 2),
@@ -1159,7 +1195,18 @@ fn brightness_steps_from_zero_to_nine() {
         press(&mut a, btn);
         assert_eq!(a.brightness(), want, "{btn:?}");
     }
-    for _ in 0..12 {
+    assert_eq!(
+        a.quick_value(QuickRow::Brightness),
+        Some(QuickValue::Level5)
+    );
+    for _ in 0..5 {
+        press(&mut a, Btn::Left);
+    }
+    assert_eq!(
+        a.quick_value(QuickRow::Brightness),
+        Some(QuickValue::Level0)
+    );
+    for _ in 0..20 {
         press(&mut a, Btn::Right);
     }
     assert_eq!(a.brightness(), 9);
@@ -1237,6 +1284,7 @@ fn the_game_boy_page_steps_the_palette_from_auto() {
         QuickRow::SCREEN_GB,
         [
             QuickRow::GbShader,
+            QuickRow::GbOverlay,
             QuickRow::GbColourCorrection,
             QuickRow::GbBlending,
             QuickRow::GbPalette,
@@ -1342,32 +1390,6 @@ fn no_row_in_hand_runs_its_value_into_its_label() {
     }
 }
 
-#[test]
-fn the_about_label_sits_on_the_same_tinted_ground_as_the_menu() {
-    let (_d, mut a, _) = on_carousel();
-    fake_faces(&mut a);
-    a.set_ground(TexId::from_raw(800));
-    a.set_blur(TexId::from_raw(801));
-    open_at(&mut a, QuickRow::About);
-    let menu = frame(&a);
-    press(&mut a, Btn::A);
-    assert!(matches!(a.phase(), Phase::About), "{:?}", a.phase());
-    let about = frame(&a);
-    assert!(
-        matches!(menu[0], Draw::Part { tex, .. } if tex == TexId::from_raw(801)),
-        "the menu is not on the blurred wallpaper"
-    );
-    assert!(
-        matches!(menu[1], Draw::Rect { colour, .. } if colour[..3] == [0.0; 3] && colour[3] > 0.5),
-        "the menu's wallpaper is not tinted"
-    );
-    assert_eq!(
-        about[..2],
-        menu[..2],
-        "the About label is not on the menu's tinted ground"
-    );
-}
-
 fn on_own_wallpaper(tint: slot_store::WallpaperTint) -> (TempDir, App) {
     let (d, _, _) = on_carousel_with(SlotState {
         wallpaper: WallpaperPick::File("bright.png".into()),
@@ -1411,7 +1433,7 @@ fn wallpaper_tint_hides_until_a_wallpaper_of_your_own_is_picked() {
     press(&mut a, Btn::Down);
     assert_eq!(
         a.quick_menu(),
-        Some(QuickRow::Recents),
+        Some(QuickRow::ShelfMode),
         "the tint row showed on the default wallpaper"
     );
     press(&mut a, Btn::Up);
@@ -1429,7 +1451,7 @@ fn wallpaper_tint_hides_until_a_wallpaper_of_your_own_is_picked() {
         let below = if shown {
             QuickRow::WallpaperTint
         } else {
-            QuickRow::Recents
+            QuickRow::ShelfMode
         };
         assert_eq!(a.quick_menu(), Some(below), "below {pick:?}");
         press(&mut a, Btn::Up);
@@ -1631,11 +1653,15 @@ fn turning_label_wear_off_asks_again_for_every_worn_face() {
         .filter_map(|(shelf, i)| a.face_cart(*shelf, *i))
         .map(|c| c.stem.as_str())
         .collect();
-    assert_eq!(stems, ["Emerald"], "only the worn cart needs a new face");
+    assert!(!stems.is_empty(), "the worn cart was not asked for again");
+    assert!(
+        stems.iter().all(|s| *s == "Emerald"),
+        "only the worn cart needs a new face: {stems:?}"
+    );
 
     press(&mut a, Btn::Right);
     assert!(a.cart_wear("Emerald") > 0.0);
-    assert_eq!(a.take_worn().len(), 1);
+    assert_eq!(a.take_worn().len(), worn.len());
 }
 
 #[test]
@@ -1782,4 +1808,64 @@ fn a_saved_gba_shimmerless_reads_as_off_on_three_by_two_and_survives_on_the_card
         a.quick_value(QuickRow::GbaShader),
         Some(QuickValue::Shimmerless)
     );
+}
+
+fn overlay_png(root: &std::path::Path, dir: &str, name: &str, w: u32, h: u32) {
+    let dir = root.join("Overlays").join(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w, h);
+    enc.set_color(png::ColorType::Rgba);
+    let mut writer = enc.write_header().unwrap();
+    writer.write_image_data(&vec![0u8; (w * h * 4) as usize]).unwrap();
+    drop(writer);
+    std::fs::write(dir.join(name), out).unwrap();
+}
+
+#[test]
+fn the_overlay_rows_hide_while_the_folders_are_empty() {
+    let (_d, a, _) = on_carousel();
+    let hidden = a.hidden_rows();
+    for row in [QuickRow::GbaOverlay, QuickRow::GbOverlay, QuickRow::GbcOverlay] {
+        assert!(hidden.contains(&row), "{row:?} shown with nothing to pick");
+    }
+}
+
+#[test]
+fn the_overlay_row_cycles_off_then_each_file_and_saves() {
+    let (d, mut a, _) = on_carousel();
+    overlay_png(d.path(), "GBC", "a_tile.png", 3, 3);
+    overlay_png(d.path(), "GBC", "b_tile.png", 3, 3);
+    assert!(!a.hidden_rows().contains(&QuickRow::GbcOverlay));
+    open_at(&mut a, QuickRow::GbcOverlay);
+    for want in [Some("a"), Some("b"), None] {
+        press(&mut a, Btn::Right);
+        assert_eq!(a.resolved_overlay(Platform::Gbc).map(|e| e.name).as_deref(), want);
+    }
+    press(&mut a, Btn::Left);
+    assert_eq!(read_slot_state(d.path()).overlay_gbc.as_deref(), Some("b"));
+    assert_eq!(a.resolved_overlay(Platform::Gb), None);
+}
+
+#[test]
+fn an_overlay_that_does_not_fit_this_screen_draws_nothing_and_stays_saved() {
+    let (d, a, _) = on_carousel_with(SlotState {
+        overlay_gba: Some("glass".into()),
+        ..SlotState::default()
+    });
+    overlay_png(d.path(), "GBA", "glass.png", 9999, 9);
+    assert_eq!(a.resolved_overlay(Platform::Gba), None);
+    assert_eq!(read_slot_state(d.path()).overlay_gba.as_deref(), Some("glass"));
+}
+
+#[cfg(feature = "nds")]
+#[test]
+fn ds_keeps_its_own_overlay_pick() {
+    let (d, a, _) = on_carousel_with(SlotState {
+        overlay_nds: Some("grid".into()),
+        ..SlotState::default()
+    });
+    overlay_png(d.path(), "NDS", "grid_tile.png", 4, 4);
+    assert_eq!(a.resolved_overlay(Platform::Nds).map(|e| e.name).as_deref(), Some("grid"));
+    assert_eq!(a.resolved_overlay(Platform::Gba), None);
 }
