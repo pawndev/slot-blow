@@ -202,6 +202,8 @@ fn palette(platform: Platform, rng: &mut Rng) -> Vec<[u8; 3]> {
             p.extend((1..16).map(|_| hsv(rng.unit(), 0.5 + 0.5 * rng.unit(), rng.unit())));
             p
         }
+        #[cfg(feature = "nds")]
+        Platform::Nds => palette(Platform::Gba, rng),
     }
 }
 

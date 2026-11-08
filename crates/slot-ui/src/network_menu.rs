@@ -5,9 +5,10 @@ use crate::hud::HUD_INK;
 use crate::icon::symbols_font;
 use crate::plate::UndoFace;
 use crate::power_menu::{MENU_H, MENU_INK, MENU_PAD};
+use crate::slot_chrome::MOUTH_H;
 use crate::quick_menu::{
-    draw_menu_ground, DIM_INK, LEGEND_Y, POINTER_BLEED, POINTER_GAP, QUICK_EDGE, QUICK_LABEL_X,
-    QUICK_PITCH, QUICK_VALUE_GAP, QUICK_VISIBLE, SCROLL_INSET, SCROLL_W, TYPE_DROP,
+    draw_menu_ground, legend_y, visible_rows, DIM_INK, POINTER_BLEED, POINTER_GAP, QUICK_EDGE, QUICK_LABEL_X,
+    QUICK_PITCH, QUICK_VALUE_GAP, SCROLL_INSET, SCROLL_W, TYPE_DROP,
     VALUE_MIN_SCALE,
 };
 
@@ -156,20 +157,19 @@ fn glyph_top(row_top: f32, h: f32) -> f32 {
     (row_top + TYPE_DROP + (MENU_H as f32 - h) / 2.0).round()
 }
 
-pub fn net_window(count: usize, selected: usize) -> (usize, usize) {
-    if count <= QUICK_VISIBLE {
+pub fn net_window(canvas: Canvas, count: usize, selected: usize) -> (usize, usize) {
+    let fits = visible_rows(canvas);
+    if count <= fits {
         return (0, count);
     }
-    let start = selected
-        .saturating_sub(QUICK_VISIBLE / 2)
-        .min(count - QUICK_VISIBLE);
-    (start, QUICK_VISIBLE)
+    let start = selected.saturating_sub(fits / 2).min(count - fits);
+    (start, fits)
 }
 
-pub fn net_row_top(count: usize, selected: usize, at: usize) -> f32 {
-    let (start, len) = net_window(count, selected);
+pub fn net_row_top(canvas: Canvas, count: usize, selected: usize, at: usize) -> f32 {
+    let (start, len) = net_window(canvas, count, selected);
     let rows = QUICK_PITCH * len as f32;
-    (LEGEND_Y - rows) / 2.0 + QUICK_PITCH * (at as f32 - start as f32)
+    (legend_y(canvas) - rows) / 2.0 + QUICK_PITCH * (at as f32 - start as f32)
 }
 
 fn push(out: &mut Vec<Draw>, (tex, w, h): NetFace, x: f32, y: f32) {
@@ -189,9 +189,9 @@ impl NetworkList<'_> {
         let pad = MENU_PAD as f32;
         let right = self.canvas.w - QUICK_EDGE;
         let count = self.lines.len() + self.message.is_some() as usize;
-        let (start, len) = net_window(count, self.selected);
+        let (start, len) = net_window(self.canvas, count, self.selected);
         for at in start..start + len {
-            let top = net_row_top(count, self.selected, at);
+            let top = net_row_top(self.canvas, count, self.selected, at);
             let Some(line) = self.lines.get(at) else {
                 if let Some(message) = self.message {
                     let y = top + TYPE_DROP + (MENU_H as f32 - message.2 as f32) / 2.0;
@@ -258,7 +258,7 @@ impl NetworkList<'_> {
         }
         if len < count {
             let x = self.canvas.w - SCROLL_INSET - SCROLL_W;
-            let y = net_row_top(count, self.selected, start);
+            let y = net_row_top(self.canvas, count, self.selected, start);
             let h = QUICK_PITCH * len as f32;
             let thumb_h = h / count as f32;
             let along = self.selected as f32 / (count - 1) as f32;
@@ -278,6 +278,108 @@ impl NetworkList<'_> {
                 h: thumb_h,
                 colour: [lit[0], lit[1], lit[2], 1.0],
             });
+        }
+    }
+}
+
+pub const PAIR_X: f32 = 40.0;
+pub const PAIR_TOP: f32 = 50.0;
+pub const PAIR_QR: u32 = 300;
+pub const PAIR_GAP: f32 = 32.0;
+pub const PAIR_EDGE: f32 = 20.0;
+pub const PAIR_LABEL_PX: f32 = 24.0;
+pub const PAIR_CODE_PX: f32 = 40.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PairSlot {
+    Scan,
+    Phone,
+    Enter,
+    Code,
+    Status,
+}
+
+impl PairSlot {
+    fn y(self) -> f32 {
+        match self {
+            PairSlot::Scan => 58.0,
+            PairSlot::Phone => 92.0,
+            PairSlot::Enter => 152.0,
+            PairSlot::Code => 186.0,
+            PairSlot::Status => 316.0,
+        }
+    }
+
+    pub fn px(self) -> f32 {
+        match self {
+            PairSlot::Code => PAIR_CODE_PX,
+            _ => PAIR_LABEL_PX,
+        }
+    }
+
+    pub fn ink(self) -> [u8; 3] {
+        match self {
+            PairSlot::Code => MENU_INK,
+            _ => DIM_INK,
+        }
+    }
+}
+
+pub fn pair_text_width(canvas: Canvas) -> f32 {
+    canvas.w - PAIR_X - PAIR_QR as f32 - PAIR_GAP - PAIR_EDGE
+}
+
+pub fn pair_face(text: &str, slot: PairSlot, max_w: f32) -> UndoFace {
+    let Some(font) = crate::text::label_font() else {
+        return UndoFace {
+            rgba: Vec::new(),
+            w: 0,
+            h: 0,
+        };
+    };
+    let px = slot.px();
+    let layout = crate::text::fit(font, text, max_w, 1, px, 12.0);
+    let ink = crate::text::line_width(font, &layout.lines.join(""), layout.px, layout.tracking)
+        .ceil() as u32;
+    let (w, h) = (ink.max(1), (px * 1.4).ceil() as u32);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    crate::text::draw_centred(&mut rgba, w, h, &layout, slot.ink());
+    UndoFace { rgba, w, h }
+}
+
+pub struct PairScreen<'a> {
+    pub qr: Option<NetFace>,
+    pub lines: &'a [(PairSlot, NetFace)],
+    pub ground: Option<(TexId, u32)>,
+    pub canvas: Canvas,
+}
+
+impl PairScreen<'_> {
+    pub fn draw(&self, out: &mut Vec<Draw>) {
+        draw_menu_ground(self.canvas, self.ground, out);
+        if let Some(face) = self.qr {
+            let inset = (PAIR_QR.saturating_sub(face.1) / 2) as f32;
+            push(out, face, PAIR_X + inset, PAIR_TOP + self.canvas.inset_y() + inset);
+        }
+        let Some(first) = self.lines.first() else {
+            return;
+        };
+        if self.qr.is_some() {
+            let x = PAIR_X + PAIR_QR as f32 + PAIR_GAP;
+            for (slot, face) in self.lines {
+                push(out, *face, x, slot.y() + self.canvas.inset_y());
+            }
+            return;
+        }
+        let top = first.0.y();
+        let bottom = self
+            .lines
+            .iter()
+            .map(|(slot, face)| slot.y() + face.2 as f32)
+            .fold(top, f32::max);
+        let shift = (self.canvas.h - MOUTH_H - (bottom - top)) / 2.0 - top;
+        for (slot, face) in self.lines {
+            push(out, *face, self.canvas.centred(face.1 as f32), slot.y() + shift);
         }
     }
 }

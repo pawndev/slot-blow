@@ -1,7 +1,7 @@
 use slot_input::Btn;
 
 use crate::bitmaps::ButtonLegend;
-use crate::draw::{Canvas, Draw, TexId, OUT_H};
+use crate::draw::{Canvas, Draw, TexId};
 use crate::guide::{draw_help_screen, help_rows_face, GUIDE_HELP_HINT};
 use crate::hud::footer_ink;
 use crate::icon::{icon_coverage, Icon};
@@ -14,6 +14,7 @@ use crate::text;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Layout {
     General,
+    Host,
     Numeric,
 }
 
@@ -46,6 +47,7 @@ pub struct Keyboard {
     layout: Layout,
     title: String,
     subtitle: Option<String>,
+    alert: bool,
     text: Vec<char>,
     cursor: usize,
     row: usize,
@@ -120,11 +122,12 @@ const NUMERIC: &[&[Cap]] = &[
 
 const LOWER: &str = "1234567890qwertyuiopasdfghjklzxcvbnm";
 const UPPER: &str = "1234567890QWERTYUIOPASDFGHJKLZXCVBNM";
+const HOST_SHIFT: &str = ".-_:/~@+=,";
 const SYMBOL: &str = "!@#$%^&*()`~[]\\|{};:'\"<>?/+=_,.-\u{20ac}\u{a3}\u{a5}\u{a2}";
 
 fn layout_rows(layout: Layout) -> &'static [&'static [Cap]] {
     match layout {
-        Layout::General => GENERAL,
+        Layout::General | Layout::Host => GENERAL,
         Layout::Numeric => NUMERIC,
     }
 }
@@ -136,11 +139,12 @@ fn nth(s: &str, i: usize) -> char {
 impl Keyboard {
     pub fn new(layout: Layout, title: &str, subtitle: Option<&str>, text: &str) -> Keyboard {
         let text: Vec<char> = text.chars().collect();
-        let row = if layout == Layout::General { 1 } else { 0 };
+        let row = if layout == Layout::Numeric { 0 } else { 1 };
         Keyboard {
             layout,
             title: title.to_string(),
             subtitle: subtitle.map(str::to_string),
+            alert: false,
             cursor: text.len(),
             text,
             row,
@@ -162,6 +166,22 @@ impl Keyboard {
 
     pub fn subtitle(&self) -> Option<&str> {
         self.subtitle.as_deref()
+    }
+
+    pub fn alerted(self) -> Keyboard {
+        Keyboard {
+            alert: true,
+            ..self
+        }
+    }
+
+    pub fn refuse(&mut self, why: &str) {
+        self.subtitle = Some(why.to_string());
+        self.alert = true;
+    }
+
+    pub fn alert(&self) -> bool {
+        self.alert
     }
 
     pub fn text(&self) -> String {
@@ -199,6 +219,8 @@ impl Keyboard {
     fn value(&self, i: usize) -> char {
         if self.layout == Layout::Numeric {
             nth(LOWER, i)
+        } else if self.layout == Layout::Host && !self.symbols && self.shift && i < 10 {
+            nth(HOST_SHIFT, i)
         } else if self.symbols || (self.shift && i < 10) {
             nth(SYMBOL, i)
         } else if self.shift {
@@ -293,7 +315,7 @@ impl Keyboard {
             self.help = false;
             return Typed::Changed;
         }
-        let general = self.layout == Layout::General;
+        let general = self.layout != Layout::Numeric;
         match b {
             Btn::Up | Btn::Down | Btn::Left | Btn::Right => {
                 self.navigate(b);
@@ -388,6 +410,7 @@ impl KeyboardFaces {
 const TITLE_Y: f32 = 20.0;
 const SUBTITLE_Y: f32 = 60.0;
 const SUBTITLE_PX: f32 = 16.0;
+const ALERT_PX: f32 = 18.0;
 const SUBTITLE_H: u32 = 24;
 const FIELD_X: f32 = 60.0;
 const FIELD_Y: f32 = 104.0;
@@ -445,15 +468,15 @@ fn block_width(layout: Layout, key_w: u32) -> f32 {
 fn indent(layout: Layout, row: usize, key_w: u32) -> f32 {
     let pitch = (key_w + KEY_GAP) as f32;
     match (layout, row) {
-        (Layout::General, 1) => pitch,
-        (Layout::General, 2 | 3) => pitch / 2.0,
+        (Layout::General | Layout::Host, 1) => pitch,
+        (Layout::General | Layout::Host, 2 | 3) => pitch / 2.0,
         _ => 0.0,
     }
 }
 
 pub fn key_rect(canvas: Canvas, layout: Layout, row: usize, col: usize) -> [f32; 4] {
     let caps = layout_rows(layout)[row];
-    let y = GRID_Y + row as f32 * ROW_PITCH;
+    let y = GRID_Y + canvas.inset_y() + row as f32 * ROW_PITCH;
     let kw = key_w(canvas);
     let w = cap_width(caps[col], kw) as f32;
     if caps[col] == Cap::Special(Space) {
@@ -483,6 +506,8 @@ fn plain(line: &str, px: f32) -> text::Layout {
     }
 }
 
+const LINE_LEAD: f32 = 1.0;
+
 fn line_face(line: &str, px: f32, h: u32, ink: [u8; 3]) -> (UndoFace, f32) {
     let Some(font) = text::label_font() else {
         return (blank(), 0.0);
@@ -490,8 +515,8 @@ fn line_face(line: &str, px: f32, h: u32, ink: [u8; 3]) -> (UndoFace, f32) {
     let set = text::line_width(font, line, px, 0.0);
     let w = set.ceil() as u32 + 2;
     let mut rgba = vec![0u8; (w * h * 4) as usize];
-    text::draw_centred(&mut rgba, w, h, &plain(line, px), ink);
-    (UndoFace { rgba, w, h }, (w as f32 - set) / 2.0)
+    text::draw_left(&mut rgba, w, h, &plain(line, px), LINE_LEAD, ink);
+    (UndoFace { rgba, w, h }, LINE_LEAD)
 }
 
 pub fn keyboard_text_face(kb: &Keyboard) -> (UndoFace, Vec<f32>) {
@@ -509,11 +534,15 @@ pub fn keyboard_text_face(kb: &Keyboard) -> (UndoFace, Vec<f32>) {
     (face, stops)
 }
 
-fn subtitle_face(label: &str) -> UndoFace {
+fn subtitle_face(label: &str, alert: bool) -> UndoFace {
     let Some(font) = text::label_font() else {
         return blank();
     };
-    let layout = text::fit(font, label, f32::INFINITY, 1, SUBTITLE_PX, SUBTITLE_PX);
+    let (px, ink) = match alert {
+        true => (ALERT_PX, MENU_INK),
+        false => (SUBTITLE_PX, DIM_INK),
+    };
+    let layout = text::fit(font, label, f32::INFINITY, 1, px, px);
     let set = layout
         .lines
         .iter()
@@ -521,7 +550,7 @@ fn subtitle_face(label: &str) -> UndoFace {
         .fold(0.0, f32::max);
     let w = set.ceil() as u32 + 2;
     let mut rgba = vec![0u8; (w * SUBTITLE_H * 4) as usize];
-    text::draw_centred(&mut rgba, w, SUBTITLE_H, &layout, DIM_INK);
+    text::draw_centred(&mut rgba, w, SUBTITLE_H, &layout, ink);
     UndoFace {
         rgba,
         w,
@@ -668,7 +697,7 @@ impl Shortcut {
 pub fn keyboard_help_columns(layout: Layout) -> [Vec<Shortcut>; 2] {
     use Shortcut::*;
     match layout {
-        Layout::General => [vec![Delete, Space, Shift], vec![Cursor, Cancel, Done]],
+        Layout::General | Layout::Host => [vec![Delete, Space, Shift], vec![Cursor, Cancel, Done]],
         Layout::Numeric => [vec![Delete, Cursor], vec![Cancel, Done]],
     }
 }
@@ -689,7 +718,7 @@ pub fn keyboard_faces(kb: &Keyboard, canvas: Canvas) -> KeyboardFaces {
     let (text, stops) = keyboard_text_face(kb);
     KeyboardFaces {
         title: heading_face(kb.title()),
-        subtitle: kb.subtitle().map(subtitle_face),
+        subtitle: kb.subtitle().map(|s| subtitle_face(s, kb.alert())),
         text,
         stops,
         caps: keyboard_cap_faces(kb, canvas),
@@ -737,7 +766,7 @@ fn draw_field(canvas: Canvas, faces: &KeyboardTex, kb: &Keyboard, out: &mut Vec<
         let shown = (tw as f32 - scroll).min(room);
         out.push(Draw::Part {
             x: FIELD_X,
-            y: FIELD_Y,
+            y: FIELD_Y + canvas.inset_y(),
             w: shown,
             h: th as f32,
             tex,
@@ -747,14 +776,14 @@ fn draw_field(canvas: Canvas, faces: &KeyboardTex, kb: &Keyboard, out: &mut Vec<
     }
     out.push(Draw::Rect {
         x: (FIELD_X + caret + CARET_GAP - scroll).round(),
-        y: FIELD_Y + CARET_INSET,
+        y: FIELD_Y + canvas.inset_y() + CARET_INSET,
         w: CARET_W,
         h: FIELD_H as f32 - 2.0 * CARET_INSET,
         colour: colour(MENU_INK),
     });
     out.push(Draw::Rect {
         x: RULE_X,
-        y: RULE_Y,
+        y: RULE_Y + canvas.inset_y(),
         w: canvas.w - 2.0 * RULE_X,
         h: RULE_H,
         colour: colour(DIM_INK),
@@ -784,10 +813,10 @@ pub fn draw_keyboard(
         out,
         faces.title,
         canvas.centred(faces.title.1 as f32),
-        TITLE_Y,
+        TITLE_Y + canvas.inset_y(),
     );
     if let Some(sub) = faces.subtitle {
-        place(out, sub, canvas.centred(sub.1 as f32), SUBTITLE_Y);
+        place(out, sub, canvas.centred(sub.1 as f32), SUBTITLE_Y + canvas.inset_y());
     }
     draw_field(canvas, faces, kb, out);
     for (r, row) in faces.caps.iter().enumerate() {
@@ -800,7 +829,7 @@ pub fn draw_keyboard(
 }
 
 pub fn draw_keyboard_legends(canvas: Canvas, faces: &KeyboardTex, out: &mut Vec<Draw>) {
-    let y = OUT_H as f32 - MOUTH_H;
+    let y = canvas.h - MOUTH_H;
     let [(cancel, cw, _), (done, dw, _)] = faces.legends;
     for (tex, w, x) in [
         (cancel, cw, 0.0),

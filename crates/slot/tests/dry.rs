@@ -48,6 +48,14 @@ fn dry(dry: Dry) -> App {
     dry_on(Platform::Gba, dry)
 }
 
+fn battery_backed() -> impl Iterator<Item = Platform> {
+    #[cfg(feature = "nds")]
+    let cell = |p: &Platform| *p != Platform::Nds;
+    #[cfg(not(feature = "nds"))]
+    let cell = |_: &Platform| true;
+    Platform::ALL.into_iter().filter(cell)
+}
+
 fn bench(a: &App) -> &Bench {
     a.bench()
         .unwrap_or_else(|| panic!("no bench in {:?}", a.phase()))
@@ -354,7 +362,7 @@ fn the_zone_always_sits_inside_the_gauge() {
 
 #[test]
 fn the_bench_paints_only_the_picture() {
-    for platform in Platform::ALL {
+    for platform in battery_backed() {
         let mut a = dry_on(platform, Dry::always(37));
         let mut frames = Vec::new();
         for (name, until) in [("notice", Stage::Notice), ("desolder", Stage::Desolder)] {
@@ -388,6 +396,14 @@ fn the_bench_paints_only_the_picture() {
             dump(&buf, platform, &format!("typing-{step}"));
         }
     }
+}
+
+#[cfg(feature = "nds")]
+#[test]
+fn a_ds_card_has_no_battery_to_run_dry() {
+    let a = dry_on(Platform::Nds, Dry::always(37));
+    assert!(a.bench().is_none(), "{:?}", a.phase());
+    assert!(!matches!(a.phase(), Phase::Dry { .. }));
 }
 
 #[test]
