@@ -2,9 +2,9 @@ mod common;
 
 use common::tmp_root;
 use slot_store::{
-    atomic_write, read_slot_state, sweep_temps, write_slot_state, Appearance, BezelPick, Blending,
-    GbPalette, Platform, Recent, Scale, Shader, SlotState, Stretch, WallpaperPick, WallpaperTint,
-    Zone, FF_SPEEDS, FF_SPEED_DEFAULT,
+    atomic_write, read_slot_state, sweep_temps, write_slot_state, Appearance, AutoLoad, BezelPick,
+    Blending, Core, GbPalette, Platform, Recent, Scale, Shader, SlotState, Stretch, WallpaperPick,
+    WallpaperTint, Zone, FF_SPEEDS, FF_SPEED_DEFAULT,
 };
 use tempfile::tempdir;
 
@@ -92,7 +92,8 @@ fn slot_state_round_trips_including_a_stem_with_an_equals_sign() {
     let d = tmp_root();
     let s = SlotState {
         cart: Some("Cheats = On".into()),
-        brightness: 3,
+        brightness: 0,
+        dim: 2,
         blue_light: 9,
         volume: 71,
         muted: true,
@@ -222,6 +223,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             cart: Some("Emerald".into()),
             cart_platform: None,
             brightness: 3,
+            dim: 0,
             blue_light: 1,
             saturation: 0,
             contrast: 0,
@@ -247,7 +249,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             shader_gba: Shader::Grid,
             shader_gb: Shader::Simpletex,
             shader_gbc: Shader::Simpletex,
-            auto_load: true,
+            auto_load: AutoLoad::Always,
             eject_save: true,
             turbo: true,
             rewind: true,
@@ -274,6 +276,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             blending_gba: Blending::Off,
             blending_gb: Blending::Off,
             blending_gbc: Blending::Off,
+            gb_core: Core::Mgba,
             recents: Vec::new(),
             favorites: Vec::new(),
             shelf: None,
@@ -294,7 +297,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         colour_correction_gb: false,
         shader_gba: Shader::Dot,
         shader_gb: Shader::Off,
-        auto_load: false,
+        auto_load: AutoLoad::PowerOn,
         eject_save: false,
         turbo: false,
         rewind: false,
@@ -329,7 +332,7 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "colour_correction_gb=0",
         "shader_gba=dot",
         "shader_gb=off",
-        "auto_load=0",
+        "auto_load=power",
         "eject_save=0",
         "turbo=0",
         "rewind=0",

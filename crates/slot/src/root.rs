@@ -1,18 +1,21 @@
 use std::path::{Path, PathBuf};
 
-pub const DIRS: [&str; 35] = [
+pub const DIRS: &[&str] = &[
     "BIOS",
     "Bezels",
     "Bezels/GBA",
     "Bezels/GB",
     "Bezels/GBC",
     "Cache",
+    "Cache/romm",
     "Config",
     "Games",
     "Games/GBA",
     "Games/GBAV",
     "Games/GB",
     "Games/GBC",
+    #[cfg(feature = "nds")]
+    "Games/NDS",
     "Guides",
     "Guides/GBA",
     "Guides/GBAV",
@@ -23,17 +26,29 @@ pub const DIRS: [&str; 35] = [
     "Labels/GBAV",
     "Labels/GB",
     "Labels/GBC",
+    #[cfg(feature = "nds")]
+    "Labels/NDS",
     "Logs",
+    "Overlays",
+    "Overlays/GBA",
+    "Overlays/GB",
+    "Overlays/GBC",
+    #[cfg(feature = "nds")]
+    "Overlays/NDS",
     "Saves",
     "Saves/GBA",
     "Saves/GBAV",
     "Saves/GB",
     "Saves/GBC",
+    #[cfg(feature = "nds")]
+    "Saves/NDS",
     "States",
     "States/GBA",
     "States/GBAV",
     "States/GB",
     "States/GBC",
+    #[cfg(feature = "nds")]
+    "States/NDS",
     "System",
     "Wallpapers",
 ];
@@ -43,6 +58,7 @@ pub fn ensure(root: &Path) {
         let _ = std::fs::create_dir_all(root.join(sub));
     }
     move_label_cache(root);
+    crate::romm::install::sweep(root);
     if let Err(e) = slot_store::move_config(root) {
         eprintln!("slot: config: {e}");
     }

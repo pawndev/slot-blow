@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
-use slot_gfx::{Compositor, Draw, ScreenEffect, TexId, OUT_H, OUT_W};
+use slot_gfx::{Compositor, Draw, TexId, OUT_H, OUT_W};
 
 const PAPER: &[u8] = include_bytes!("../assets/paper.png");
+use crate::screen::Screen;
 use crate::shot_loader::{ShotLoader, Want};
 use slot_input::{InputSource, Millis};
 use slot_power::{Platform, Power};
@@ -39,9 +40,11 @@ const ALERT_INK: [u8; 3] = [0xf0, 0xb4, 0x3c];
 
 pub struct Frontend {
     session: Session,
+    grounds: Option<(TexId, Option<TexId>, (u32, u32))>,
     start: Instant,
     last: Instant,
     draws: Vec<Draw>,
+    ds: crate::ds_view::DsView,
     polaroid_texes: Vec<TexId>,
     title_tex: Option<TexId>,
     faces: FaceBuilder,
@@ -52,27 +55,34 @@ pub struct Frontend {
     rebuild_faces: RebuildFaces,
     link_art: LinkArtBuilder,
     link_art_done: bool,
-    core_asked: Option<String>,
+    core_asked: Option<(Console, String)>,
     core_tex: CoreTextures,
-    core_built: Option<String>,
+    core_built: Option<(Console, String)>,
     undo_tex: Option<TexId>,
     switcher: Switcher,
     guide_page: GuidePage,
     clocks: Clocks,
+    box_text: BoxTextSync,
+    box_art: BoxArtSync,
     about: AboutFace,
     update_text: UpdateText,
     fetch_sync: FetchSync,
     studio_sync: StudioSync,
     print_tex: Option<crate::print_scene::PrintTextures>,
+    gift_boxes: crate::unwrap_scene::GiftBoxes,
     print_stage: Option<std::sync::mpsc::Receiver<Option<crate::print_scene::StageArt>>>,
     print_stage_asked: bool,
     quick_clock: QuickClock,
     glitch: Vec<u8>,
     quick_network: QuickClock,
+    quick_romm: [QuickClock; 4],
+    quick_kid_shelf: QuickClock,
     networks: crate::network_faces::NetworkSync,
     quick_palette: QuickPalette,
     wallpaper: WallpaperSync,
+    picking_faces: PickingSync,
     game_bezel: BezelSync,
+    overlay: OverlaySync,
     look: Option<ShelfLook>,
     link_shot: Option<TexId>,
     link_shot_size: (u32, u32),
@@ -109,6 +119,27 @@ struct BezelSync {
     image: Option<BezelImage>,
     labels: [String; 3],
     faces: [(Option<TexId>, Option<TexId>); 3],
+}
+
+#[derive(Default)]
+struct OverlaySync {
+    want: Option<(Console, Option<slot_store::OverlayEntry>)>,
+    serial: u64,
+    loader: Option<crate::overlay::OverlayLoader>,
+    tile: Option<TexId>,
+    full: Option<TexId>,
+    full_bottom: Option<TexId>,
+    shown: Option<ShownOverlay>,
+    ds: Option<crate::overlay::DecodedOverlay>,
+    labels: [String; 4],
+    faces: [(Option<TexId>, Option<TexId>); 4],
+}
+
+#[derive(Clone, Copy)]
+struct ShownOverlay {
+    tile: Option<(TexId, u32, u32)>,
+    top: Option<(TexId, u32, u32)>,
+    bottom: Option<(TexId, u32, u32)>,
 }
 
 #[derive(Default)]
@@ -447,6 +478,7 @@ struct Clocks {
 
 struct ShelfLook {
     slot: [[TexId; 2]; 2],
+    ds_slot: Option<[[TexId; 2]; 2]>,
     plugged: [TexId; 2],
     bolt: [TexId; 2],
     port: [Option<TexId>; 2],
@@ -475,6 +507,19 @@ struct Switcher {
     prompt_detail: Option<TexId>,
 }
 
+fn save_headers_when_changed(root: std::path::PathBuf) {
+    let _ = std::thread::Builder::new()
+        .name("slot-headers".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            if slot_store::header_index::dirty() {
+                if let Err(e) = slot_store::header_index::save(&root) {
+                    eprintln!("slot: header index: {e}");
+                }
+            }
+        });
+}
+
 impl Frontend {
     pub fn boot(platform: Box<dyn Platform>) -> Self {
         Self::boot_with(platform, crate::audio::opened_sink())
@@ -483,6 +528,8 @@ impl Frontend {
     pub fn boot_with(platform: Box<dyn Platform>, sink: Box<dyn crate::audio::AudioSink>) -> Self {
         let now = Instant::now();
         let cart_faces = CartFaces::spawn(platform.root().to_path_buf());
+        save_headers_when_changed(platform.root().to_path_buf());
+        let lid_root = platform.root().to_path_buf();
         let mut session = Session::boot_with(platform.root().to_path_buf(), sink);
         session
             .app_mut()
@@ -490,6 +537,10 @@ impl Frontend {
         session
             .app_mut()
             .set_art_jobs(crate::art::jobs::art_jobs(platform.root().to_path_buf()));
+        #[cfg(feature = "romm")]
+        session
+            .app_mut()
+            .set_romm_jobs(crate::romm::romm_jobs(platform.root().to_path_buf(), crate::romm::http_api));
         session.app_mut().set_wifi(wifi_worker(platform.root()));
         #[cfg(feature = "device")]
         session
@@ -514,9 +565,10 @@ impl Frontend {
             start: now,
             last: now,
             draws: Vec::new(),
+            ds: Default::default(),
             polaroid_texes: Vec::new(),
             title_tex: None,
-            faces: FaceBuilder::spawn(),
+            faces: FaceBuilder::spawn(lid_root),
             cart_faces,
             rebuild: None,
             stale_check,
@@ -531,21 +583,29 @@ impl Frontend {
             switcher: Switcher::default(),
             guide_page: GuidePage::default(),
             clocks: Clocks::default(),
+            box_text: BoxTextSync::default(),
+            box_art: BoxArtSync::default(),
             about: AboutFace::default(),
             update_text: UpdateText::default(),
             fetch_sync: FetchSync::new(),
             studio_sync: StudioSync::new(),
             print_tex: None,
+            gift_boxes: Default::default(),
             print_stage: None,
             print_stage_asked: false,
             quick_clock: QuickClock::default(),
             glitch: Vec::new(),
             quick_network: QuickClock::default(),
+            quick_romm: Default::default(),
+            quick_kid_shelf: Default::default(),
             networks: Default::default(),
             quick_palette: QuickPalette::default(),
             wallpaper: WallpaperSync::default(),
+            picking_faces: PickingSync::default(),
             game_bezel: BezelSync::default(),
+            overlay: OverlaySync::default(),
             look: None,
+            grounds: None,
             link_shot: None,
             link_shot_size: (0, 0),
             link_shot_shown: false,
@@ -654,6 +714,11 @@ impl Frontend {
         self.session
             .app_mut()
             .set_clock_title_face((tex, title.w, title.h));
+        let picking = [false, true].map(|light| {
+            slot_ui::picking_legend_faces(footer_ink(light))
+                .map(|f| (compositor.create_texture(f.w, f.h, &f.rgba), f.w))
+        });
+        self.session.app_mut().set_picking_faces(picking);
         let heart = slot_ui::heart_face(slot_ui::HEART_SCALE, slot_ui::HEART_INK);
         let id = compositor.create_texture_nearest(heart.w, heart.h, &heart.rgba);
         self.session.app_mut().set_heart_face(id, heart.w, heart.h);
@@ -683,6 +748,17 @@ impl Frontend {
                 [upload(slot_back_light()), upload(slot_front_light())],
             ]
         };
+        #[cfg(feature = "nds")]
+        let ds_slot = {
+            let mut upload =
+                |bytes: &[u8]| compositor.create_texture(slot_ui::SLOT_W, slot_ui::SLOT_H, bytes);
+            Some([
+                [upload(slot_ui::ds_slot_back()), upload(slot_ui::ds_slot_front())],
+                [upload(slot_ui::ds_slot_back_light()), upload(slot_ui::ds_slot_front_light())],
+            ])
+        };
+        #[cfg(not(feature = "nds"))]
+        let ds_slot = None;
         let plugged = [
             compositor.create_texture(slot_ui::SLOT_W, slot_ui::SLOT_H, slot_ui::slot_plugged()),
             compositor.create_texture(
@@ -704,8 +780,14 @@ impl Frontend {
             })
         });
         self.session.app_mut().set_wifi_faces(wifi);
+        let kid = [false, true].map(|light| {
+            let f = icon_face(Icon::Kid, slot_ui::KID_ICON_PX, footer_ink(light));
+            (compositor.create_texture(f.w, f.h, &f.rgba), f.w, f.h)
+        });
+        self.session.app_mut().set_kid_icon_faces(kid);
         self.look = Some(ShelfLook {
             slot,
+            ds_slot,
             plugged,
             bolt,
             port: [None, None],
@@ -721,12 +803,32 @@ impl Frontend {
         let Some(rgba) = slot_ui::default_background() else {
             return;
         };
-        let id = compositor.create_texture(OUT_W, OUT_H, rgba);
-        self.session.app_mut().set_ground(id);
-        if let Some(rgba) = slot_ui::blur_background() {
+        let ground = compositor.create_texture(OUT_W, OUT_H, rgba);
+        self.session.app_mut().set_ground(ground);
+        let blur = slot_ui::blur_background().map(|rgba| {
             let id = compositor.create_texture(OUT_W, OUT_H, rgba);
             self.session.app_mut().set_blur(id);
+            id
+        });
+        self.grounds = Some((ground, blur, (OUT_W, OUT_H)));
+    }
+
+    fn sync_grounds(&mut self, compositor: &mut Compositor) {
+        let Some((ground, blur, size)) = self.grounds else {
+            return;
+        };
+        let want = self.session.app().wallpaper_size();
+        if want == size || (size == (OUT_W, OUT_H) && slot_ui::reference_ground_covers(want)) {
+            return;
         }
+        if let Some(rgba) = slot_ui::default_background_at(want.0, want.1) {
+            compositor.update_texture(ground, want.0, want.1, &rgba);
+        }
+        if let (Some(id), Some(rgba)) = (blur, slot_ui::blur_background_at(want.0, want.1)) {
+            compositor.update_texture(id, want.0, want.1, &rgba);
+        }
+        self.session.app_mut().set_ground_width(want.0);
+        self.grounds = Some((ground, blur, want));
     }
 
     fn apply_look(&mut self) {
@@ -756,6 +858,10 @@ impl Frontend {
             return;
         }
         self.session.app_mut().set_slot_faces(slot[0], slot[1]);
+        if let Some(ds) = self.look.as_ref().and_then(|look| look.ds_slot) {
+            let ds = ds[usize::from(light)];
+            self.session.app_mut().set_ds_slot_faces(ds[0], ds[1]);
+        }
         self.session.app_mut().set_plugged_face(plugged);
         if let Some(tex) = self.look.as_ref().map(|look| look.plugged[1]) {
             self.session.app_mut().set_printer_face(tex);
@@ -830,12 +936,16 @@ impl Frontend {
         let sockets = faces.sockets.into_iter().map(&mut cart).collect();
         let chips = faces.chips.into_iter().map(&mut cart).collect();
         let blank = cart(faces.blank_chip);
+        let gb_sockets = faces.gb_sockets.into_iter().map(&mut cart).collect();
+        let gb_chips = faces.gb_chips.into_iter().map(&mut cart).collect();
+        let gb_blank = cart(faces.gb_blank_chip);
         let shadow = cart(faces.chip_shadow);
         let mut up = |f: UndoFace| (compositor.create_texture(f.w, f.h, &f.rgba), f.w, f.h);
         let lines = faces.shutdown.into_iter().map(&mut up).collect();
         let repair = faces.repair.into_iter().map(&mut up).collect();
         let reset = faces.reset.into_iter().map(&mut up).collect();
         let delete = faces.delete.into_iter().map(&mut up).collect();
+        let kid = faces.kid.into_iter().map(&mut up).collect();
         let delete_shot = faces.delete_shot.into_iter().map(&mut up).collect();
         let labels = faces
             .quick_labels
@@ -889,6 +999,7 @@ impl Frontend {
             app.set_update_legends(update);
         }
         app.set_reset_faces(reset);
+        app.set_kid_faces(kid);
         app.set_delete_faces(delete);
         app.set_delete_shot_faces(delete_shot);
         app.set_quick_menu_faces(QuickMenuFaces {
@@ -900,6 +1011,7 @@ impl Frontend {
             descriptions,
         });
         app.set_core_part_faces(sockets, chips, blank, shadow);
+        app.set_core_gb_part_faces(gb_sockets, gb_chips, gb_blank);
         app.set_core_legend_faces(core_legend, core_legend_light);
         app.set_link_menu_faces(roles);
         app.set_link_linked_face(linked);
@@ -922,8 +1034,9 @@ impl Frontend {
         else {
             return;
         };
-        if let Some(rgba) = bezel_face(&path, panel.0, panel.1) {
-            let tex = compositor.create_texture(panel.0, panel.1, &rgba);
+        let (w, h) = self.session.app().game_bezel_size();
+        if let Some(rgba) = bezel_face(&path, w, h) {
+            let tex = compositor.create_texture(w, h, &rgba);
             self.session.app_mut().set_sp_strip(Some(tex));
             eprintln!("slot: bezel {}", path.display());
         }
@@ -972,28 +1085,64 @@ impl Frontend {
         self.link_shot_shown = true;
     }
 
+    pub fn bottom_source(&self) -> crate::app::BottomSource {
+        self.session.app().bottom_source()
+    }
+
+    pub fn set_two_panels(&mut self, on: bool) {
+        self.session.app_mut().set_two_panels(on);
+    }
+
+    pub fn render_screen(&mut self, compositor: &mut Compositor, window: (u32, u32), screen: Screen) {
+        if screen == Screen::Top {
+            self.render(compositor, window);
+            return;
+        }
+        self.session.app_mut().set_panel(window);
+        compositor.fit(window);
+        compositor.begin_frame();
+        self.draw_screen_list(compositor, screen);
+        compositor.end_frame(window);
+    }
+
     pub fn compose(&mut self, compositor: &mut Compositor) {
+        if self.prepare(compositor) {
+            self.draw_screen_list(compositor, Screen::Top);
+        }
+    }
+
+    fn draw_screen_list(&mut self, compositor: &mut Compositor, screen: Screen) {
+        self.draws.clear();
+        self.session.app().draw_screen(screen, &mut self.draws);
+        if screen == Screen::Top || self.draws.iter().any(|d| matches!(d, Draw::Game)) {
+            self.ds.swap_game(&mut self.draws, &self.session, compositor, screen);
+        }
+        compositor.draw_list(&self.draws);
+        if screen == Screen::Top {
+            if let Some((w, h, rgba)) = compositor.take_capture() {
+                self.session.app_mut().shot_taken(w, h, rgba);
+            }
+        }
+    }
+
+    fn prepare(&mut self, compositor: &mut Compositor) -> bool {
         compositor.set_blue_light(self.session.app().blue_light());
+        compositor.set_dim(self.session.app().dim());
         compositor.set_saturation(self.session.app().saturation());
         compositor.set_contrast(self.session.app().contrast());
         compositor.set_picture(self.session.app().picture_rect());
-        compositor.set_screen_effect(match self.session.app().screen_shader() {
-            slot_store::Shader::Off => ScreenEffect::None,
-            slot_store::Shader::Lcd3x => ScreenEffect::Lcd3x,
-            slot_store::Shader::Grid => ScreenEffect::Grid,
-            slot_store::Shader::Dot => ScreenEffect::Dot,
-            slot_store::Shader::Simpletex => ScreenEffect::Simpletex,
-            slot_store::Shader::Shimmerless => ScreenEffect::Shimmerless,
-        });
+        compositor.set_screen_effect(self.session.app().screen_effect());
         compositor.set_shake(self.session.app().screen_shake());
         compositor.set_screen_power(self.session.app().screen_power());
         compositor.set_screen_footer(self.session.app().screen_footer());
         compositor.set_game_source_rect(self.session.app().source_rect());
         compositor.set_game_layout(self.session.app().game_layout());
+        compositor.set_placeholder_bezel(self.session.app().placeholder_bezel());
         self.grab_link_shot(compositor);
         compositor.begin_frame();
+        self.sync_grounds(compositor);
         if self.draw_rebuild(compositor) {
-            return;
+            return false;
         }
         if let Some(g) = self.session.app().glitch() {
             dust::glitch(&mut self.glitch, g.platform, g.seed, g.at, g.puff);
@@ -1001,12 +1150,17 @@ impl Frontend {
         } else if let Some([r, g, b]) = self.session.app().blank_panel() {
             let px = (slot_gfx::SRC_W * slot_gfx::SRC_H) as usize;
             compositor.upload_game(&[b, g, r, 0xff].repeat(px));
-        } else if let Some(frame) = self.session.frame() {
+        } else if let Some(frame) = (!crate::ds_view::seated(&self.session))
+            .then(|| self.session.frame())
+            .flatten()
+        {
             compositor.upload_game(&frame);
             crate::latency::taken();
         }
         self.cart_faces.sync(self.session.app_mut(), compositor);
         sync_clock(self.session.app_mut(), compositor, &mut self.clocks);
+        sync_box_text(self.session.app_mut(), compositor, &mut self.box_text);
+        sync_box_art(self.session.app_mut(), compositor, &mut self.box_art);
         sync_binding_faces(self.session.app_mut(), compositor);
         sync_about(self.session.app_mut(), compositor, &mut self.about);
         sync_update(self.session.app_mut(), compositor, &mut self.update_text);
@@ -1014,6 +1168,7 @@ impl Frontend {
         sync_studio(self.session.app_mut(), compositor, &mut self.studio_sync);
         self.step_print_stage(compositor);
         sync_server(self.session.app_mut(), compositor, self.print_tex);
+        self.gift_boxes.sync(self.session.app_mut(), compositor);
         let stale = self.session.app_mut().take_stale_labels();
         if !stale.is_empty() {
             if let Some(root) = self.session.app().root().map(|r| r.to_path_buf()) {
@@ -1021,19 +1176,28 @@ impl Frontend {
             }
         }
         if self.session.app_mut().take_rescanned() {
+            if let Some(root) = self.session.app().root() {
+                label_cache::relearn_stamps(root);
+            }
             self.wallpaper.image = None;
             self.wallpaper.label.clear();
             self.wallpaper.shelf_asked.clear();
             self.game_bezel.image = None;
             self.game_bezel.labels = Default::default();
+            self.overlay.want = None;
+            self.overlay.labels = Default::default();
         }
         sync_quick_clock(self.session.app_mut(), compositor, &mut self.quick_clock);
         sync_quick_network(self.session.app_mut(), compositor, &mut self.quick_network);
+        sync_quick_romm(self.session.app_mut(), compositor, &mut self.quick_romm);
+        sync_quick_kid_shelf(self.session.app_mut(), compositor, &mut self.quick_kid_shelf);
         self.networks.sync(self.session.app_mut(), compositor);
         sync_quick_palette(self.session.app_mut(), compositor, &mut self.quick_palette);
         sync_wallpaper(self.session.app_mut(), compositor, &mut self.wallpaper);
+        sync_picking(self.session.app_mut(), compositor, &mut self.picking_faces);
         sync_game_bezel(self.session.app_mut(), compositor, &mut self.game_bezel);
         compositor.set_game_bezel(self.session.app().shown_game_bezel());
+        sync_overlay(self.session.app_mut(), compositor, &mut self.overlay, self.ds.showing_top());
         compositor.set_sp_frame(self.session.app().picture_on_top());
         sync_core_picker(
             self.session.app_mut(),
@@ -1091,12 +1255,7 @@ impl Frontend {
             &mut self.switcher,
         );
         sync_guide(self.session.app_mut(), compositor, &mut self.guide_page);
-        self.draws.clear();
-        self.session.app().draw(&mut self.draws);
-        compositor.draw_list(&self.draws);
-        if let Some((w, h, rgba)) = compositor.take_capture() {
-            self.session.app_mut().shot_taken(w, h, rgba);
-        }
+        true
     }
 
     pub fn set_dust(&mut self, dust: Dust) {
@@ -1129,6 +1288,7 @@ impl Frontend {
             .name("slot-label-check".into())
             .spawn(move || {
                 let _ = tx.send(label_cache::stale(&root, carts.iter()));
+                label_cache::learn_stamps(&root);
             })
             .ok()
             .map(|_| rx)
@@ -1226,6 +1386,34 @@ impl Frontend {
         self.session.app()
     }
 
+    pub fn ds_overlay(&self) -> Option<&crate::overlay::DecodedOverlay> {
+        self.overlay.ds.as_ref()
+    }
+
+    pub fn ds_frame(&self) -> Option<&[u8]> {
+        self.ds.last_frame()
+    }
+
+    pub fn ds_direct(&self) -> bool {
+        crate::ds_view::direct(&self.session)
+    }
+
+    pub fn screen_power(&self) -> f32 {
+        self.session.app().screen_power()
+    }
+
+    pub fn ds_menu_below(&self) -> bool {
+        crate::ds_view::playing(&self.session) && !crate::ds_view::direct(&self.session)
+    }
+
+    pub fn frames_published(&self) -> u64 {
+        self.session.frames_published()
+    }
+
+    pub fn set_ds_touch(&self, at: Option<(u8, u8)>) {
+        crate::ds_view::set_touch(&self.session, at);
+    }
+
     pub fn app_mut(&mut self) -> &mut crate::app::App {
         self.session.app_mut()
     }
@@ -1236,6 +1424,10 @@ impl Frontend {
 
     pub fn set_art_jobs(&mut self, jobs: Box<dyn crate::art::jobs::ArtJobs>) {
         self.session.app_mut().set_art_jobs(jobs);
+    }
+
+    pub fn set_romm_jobs(&mut self, jobs: Box<dyn crate::romm::RommJobs>) {
+        self.session.app_mut().set_romm_jobs(jobs);
     }
 
     pub fn set_left_stick(&mut self, present: bool) {
@@ -1335,6 +1527,9 @@ struct UiFaces {
     sockets: Vec<CartFace>,
     chips: Vec<CartFace>,
     blank_chip: CartFace,
+    gb_sockets: Vec<CartFace>,
+    gb_chips: Vec<CartFace>,
+    gb_blank_chip: CartFace,
     chip_shadow: CartFace,
     core_legend: Vec<UndoFace>,
     core_legend_light: Vec<UndoFace>,
@@ -1348,6 +1543,7 @@ struct UiFaces {
     blow: UndoFace,
     repair: Vec<UndoFace>,
     reset: Vec<UndoFace>,
+    kid: Vec<UndoFace>,
     delete: Vec<UndoFace>,
     delete_shot: Vec<UndoFace>,
     update_legends: [UndoFace; 3],
@@ -1400,6 +1596,15 @@ impl UiFaces {
                 .map(|c| chip_face(Some(*c)))
                 .collect(),
             blank_chip: chip_face(None),
+            gb_sockets: slot_store::Core::ALL
+                .iter()
+                .map(|c| slot_ui::gb_socket_face(*c))
+                .collect(),
+            gb_chips: slot_store::Core::ALL
+                .iter()
+                .map(|c| slot_ui::gb_chip_face(Some(*c)))
+                .collect(),
+            gb_blank_chip: slot_ui::gb_chip_face(None),
             chip_shadow: chip_shadow_face(),
             core_legend: core_button_legends(footer_ink(false)),
             core_legend_light: core_button_legends(footer_ink(true)),
@@ -1431,6 +1636,17 @@ impl UiFaces {
                     menu_detail_face("It cannot be brought back."),
                     keep,
                     delete,
+                ]
+            },
+            kid: {
+                let [cancel, on] = prompt_legends(footer_ink(false), "Cancel", "Turn On");
+                vec![
+                    menu_face("Turn on Kid Mode?"),
+                    menu_detail_face("Settings and editing lock."),
+                    menu_detail_face("To unlock, hold START, SELECT, L2 and R2"),
+                    menu_detail_face("while turning on."),
+                    cancel,
+                    on,
                 ]
             },
             delete_shot: {
@@ -1734,7 +1950,8 @@ fn sync_clock(app: &mut App, compositor: &mut Compositor, clocks: &mut Clocks) {
         app.set_shelf_clock_face(id, w);
     }
     let platform_shown = app.slot_text().unwrap_or_default();
-    if platform_shown != clocks.platform {
+    let lost = !platform_shown.is_empty() && app.shelf_platform_missing();
+    if platform_shown != clocks.platform || lost {
         clocks.platform = platform_shown.clone();
         if platform_shown.is_empty() {
             app.clear_shelf_platform();
@@ -1847,6 +2064,88 @@ fn sync_game_bezel(app: &mut App, compositor: &mut Compositor, state: &mut Bezel
     }
 }
 
+fn sync_overlay(app: &mut App, compositor: &mut Compositor, state: &mut OverlaySync, ds_top: bool) {
+    let platform = app.playing_platform();
+    let entry = app.resolved_overlay(platform);
+    let want = Some((platform, entry.clone()));
+    if state.want != want {
+        state.want = want;
+        state.serial += 1;
+        let dir = app.root().map(|root| crate::overlay::folder(root, platform));
+        match (entry, dir) {
+            (Some(e), Some(dir)) => {
+                let path = |name: &Option<String>| name.as_ref().map(|n| dir.join(n));
+                state
+                    .loader
+                    .get_or_insert_with(crate::overlay::OverlayLoader::spawn)
+                    .request(crate::overlay::OverlayRequest {
+                        serial: state.serial,
+                        tile: path(&e.tile),
+                        both: path(&e.both),
+                        top: path(&e.top),
+                        bottom: path(&e.bottom),
+                    });
+            }
+            _ => {
+                state.shown = None;
+                state.ds = Some(crate::overlay::DecodedOverlay {
+                    serial: state.serial,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    if let Some(done) = state.loader.as_ref().and_then(|l| l.latest()) {
+        if done.serial == state.serial {
+            let tile = done
+                .tile
+                .as_ref()
+                .map(|(w, h, rgba)| (upload_rgba(compositor, &mut state.tile, *w, *h, rgba), *w, *h));
+            let two = crate::overlay::two_screens(platform);
+            let (top, bottom) = match two {
+                true => (done.top.as_ref().or(done.both.as_ref()), done.bottom.as_ref().or(done.both.as_ref())),
+                false => (done.both.as_ref(), None),
+            };
+            let top = top.map(|(w, h, rgba)| (upload_rgba(compositor, &mut state.full, *w, *h, rgba), *w, *h));
+            let bottom = bottom
+                .map(|(w, h, rgba)| (upload_rgba(compositor, &mut state.full_bottom, *w, *h, rgba), *w, *h));
+            state.shown = Some(ShownOverlay { tile, top, bottom });
+            state.ds = Some(done);
+        }
+    }
+    let ds_top = ds_top || !crate::overlay::two_screens(platform);
+    compositor.set_overlay(state.shown.map(|s| slot_gfx::Overlay {
+        full: if ds_top { s.top } else { s.bottom },
+        tile: s.tile,
+    }));
+    if app.quick_menu().is_none() && app.in_game_menu().is_none() {
+        return;
+    }
+    for platform in [
+        Console::Gba,
+        Console::Gb,
+        Console::Gbc,
+        #[cfg(feature = "nds")]
+        Console::Nds,
+    ] {
+        let at = crate::app::overlay_slot(platform);
+        let label = app.overlay_label(platform);
+        if state.labels[at] == label {
+            continue;
+        }
+        let (dim, lit) = (quick_value_face(&label, false), quick_value_face(&label, true));
+        let (dim_size, lit_size) = ((dim.w, dim.h), (lit.w, lit.h));
+        let dim = upload(compositor, &mut state.faces[at].0, dim);
+        let lit = upload(compositor, &mut state.faces[at].1, lit);
+        app.set_quick_overlay_faces(
+            platform,
+            (dim, dim_size.0, dim_size.1),
+            (lit, lit_size.0, lit_size.1),
+        );
+        state.labels[at] = label;
+    }
+}
+
 fn sync_shelf_wallpaper(app: &mut App, compositor: &mut Compositor, state: &mut WallpaperSync) {
     let size = app.wallpaper_size();
     let shown = app.shown_wallpaper();
@@ -1895,9 +2194,98 @@ fn sync_shelf_wallpaper(app: &mut App, compositor: &mut Compositor, state: &mut 
     }
 }
 
+#[derive(Default)]
+struct PickingSync {
+    add: Option<[TexId; 2]>,
+    badge: Option<TexId>,
+    heading: Option<(String, bool)>,
+    heading_tex: Option<TexId>,
+    names: Vec<String>,
+    name_texs: Vec<[TexId; 2]>,
+}
+
+fn sync_edit_text(app: &mut App, compositor: &mut Compositor, state: &mut PickingSync) {
+    let heading = app.edit_heading();
+    if heading != state.heading {
+        state.heading = heading.clone();
+        let face = heading.map(|(text, large)| {
+            let f = slot_ui::heading_text_face(&text, large);
+            let (w, h) = (f.w, f.h);
+            (upload(compositor, &mut state.heading_tex, f), w, h)
+        });
+        app.set_heading_face(face);
+    }
+    let names = app.name_face_names();
+    if names != state.names {
+        let mut faces = Vec::new();
+        for (k, name) in names.iter().enumerate() {
+            let pair = [false, true].map(|picked| slot_ui::stack_name_face(name, picked));
+            let ids = match state.name_texs.get(k) {
+                Some(ids) => {
+                    for (id, f) in ids.iter().zip(&pair) {
+                        compositor.update_texture(*id, f.w.max(1), f.h.max(1), &f.rgba);
+                    }
+                    *ids
+                }
+                None => {
+                    let ids = pair
+                        .each_ref()
+                        .map(|f| compositor.create_texture(f.w.max(1), f.h.max(1), &f.rgba));
+                    state.name_texs.push(ids);
+                    ids
+                }
+            };
+            faces.push((
+                name.clone(),
+                [
+                    (ids[0], pair[0].w, pair[0].h),
+                    (ids[1], pair[1].w, pair[1].h),
+                ],
+            ));
+        }
+        state.names = names;
+        app.set_name_faces(faces);
+    }
+}
+
+fn sync_picking(app: &mut App, compositor: &mut Compositor, state: &mut PickingSync) {
+    sync_edit_text(app, compositor, state);
+    let Some(n) = app.picked_count() else {
+        return;
+    };
+    if app.add_faces_count() != Some(n) {
+        let faces = [false, true].map(|light| slot_ui::add_legend(footer_ink(light), n));
+        let ids = match state.add {
+            Some(ids) => {
+                for (id, f) in ids.iter().zip(&faces) {
+                    compositor.update_texture(*id, f.w, f.h, &f.rgba);
+                }
+                ids
+            }
+            None => faces
+                .each_ref()
+                .map(|f| compositor.create_texture(f.w, f.h, &f.rgba)),
+        };
+        state.add = Some(ids);
+        app.set_add_faces([(ids[0], faces[0].w), (ids[1], faces[1].w)], n);
+    }
+    if n > 1 && app.count_badge_count() != Some(n) {
+        let f = slot_ui::count_badge_face(n);
+        let id = match state.badge {
+            Some(id) => {
+                compositor.update_texture(id, f.w, f.h, &f.rgba);
+                id
+            }
+            None => compositor.create_texture(f.w, f.h, &f.rgba),
+        };
+        state.badge = Some(id);
+        app.set_count_badge((id, f.w, f.h), n);
+    }
+}
+
 fn sync_wallpaper(app: &mut App, compositor: &mut Compositor, state: &mut WallpaperSync) {
     let (w, h) = app.wallpaper_size();
-    let on_shelf = app.wallpaper() == slot_store::WallpaperPick::Shelf;
+    let on_shelf = app.wallpapers_preload();
     if on_shelf {
         sync_shelf_wallpaper(app, compositor, state);
     }
@@ -1982,6 +2370,55 @@ fn sync_quick_network(app: &mut App, compositor: &mut Compositor, state: &mut Qu
     let lit = upload(compositor, &mut state.lit, lit);
     app.set_quick_network_faces((dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1));
     state.shown = text;
+}
+
+fn sync_quick_kid_shelf(app: &mut App, compositor: &mut Compositor, state: &mut QuickClock) {
+    if app.quick_menu().is_none() {
+        return;
+    }
+    let text = app.kid_shelf_text();
+    if text == state.shown {
+        return;
+    }
+    let (dim, lit) = (
+        quick_value_face(&text, false),
+        quick_value_face(&text, true),
+    );
+    let (dim_size, lit_size) = ((dim.w, dim.h), (lit.w, lit.h));
+    let dim = upload(compositor, &mut state.dim, dim);
+    let lit = upload(compositor, &mut state.lit, lit);
+    app.set_quick_kid_shelf_faces((dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1));
+    state.shown = text;
+}
+
+fn sync_quick_romm(app: &mut App, compositor: &mut Compositor, state: &mut [QuickClock; 4]) {
+    if app.quick_menu().is_none() {
+        return;
+    }
+    let texts = app.romm_texts();
+    if texts.iter().zip(state.iter()).all(|(t, s)| *t == s.shown) {
+        return;
+    }
+    let mut faces = [None; 4];
+    for ((text, slot), face) in texts.into_iter().zip(state.iter_mut()).zip(faces.iter_mut()) {
+        if text.is_empty() {
+            slot.shown = text;
+            continue;
+        }
+        let (dim, lit) = (
+            quick_value_face(&text, false),
+            quick_value_face(&text, true),
+        );
+        let (dim_size, lit_size) = ((dim.w, dim.h), (lit.w, lit.h));
+        let dim = upload(compositor, &mut slot.dim, dim);
+        let lit = upload(compositor, &mut slot.lit, lit);
+        *face = Some([
+            (dim, dim_size.0, dim_size.1),
+            (lit, lit_size.0, lit_size.1),
+        ]);
+        slot.shown = text;
+    }
+    app.set_quick_romm_faces(faces);
 }
 
 fn sync_quick_palette(app: &mut App, compositor: &mut Compositor, state: &mut QuickPalette) {
@@ -2102,18 +2539,24 @@ fn sync_about(app: &mut App, compositor: &mut Compositor, state: &mut AboutFace)
     }
     state.battery = battery;
     let build = Build::current();
-    let face = sticker_face(&StickerFields {
+    let baseos = crate::baseos::var("BASEOS_VERSION");
+    let model = crate::baseos::var("BASEOS_MODEL").unwrap_or_default();
+    let fields = StickerFields {
         battery,
         serial: &build.serial(),
         version: build.version,
-        baseos: crate::baseos::var("BASEOS_VERSION").as_deref(),
-        model: &crate::baseos::var("BASEOS_MODEL").unwrap_or_default(),
-    });
+        baseos: baseos.as_deref(),
+        model: &model,
+    };
+    let face = match crate::baseos::var("BASEOS_TARGET").as_deref() {
+        Some("rgdsplus") => slot_ui::ds_sticker_face(&fields),
+        _ => sticker_face(&fields),
+    };
+    let (w, h) = (face.w, face.h);
     let id = upload(compositor, &mut state.tex, face);
-    app.set_sticker_face(id);
+    app.set_sticker_face(id, w, h);
 }
 
-/// The textures the core picker reuses from one cart to the next.
 #[derive(Default)]
 struct CoreTextures {
     interior: Option<TexId>,
@@ -2125,28 +2568,24 @@ fn sync_core_picker(
     app: &mut App,
     compositor: &mut Compositor,
     builder: &FaceBuilder,
-    asked: &mut Option<String>,
+    asked: &mut Option<(Console, String)>,
     tex: &mut CoreTextures,
-    built: &mut Option<String>,
+    built: &mut Option<(Console, String)>,
 ) {
     if app.take_core_stale() {
         *asked = None;
         *built = None;
     }
-    let highlighted = app.selected_stem().map(str::to_string);
-    if highlighted.is_some() && *asked != highlighted {
-        if let Some(cart) = app
-            .carts()
-            .find(|c| highlighted.as_deref() == Some(c.stem.as_str()))
-        {
-            builder.request(cart.clone());
-        }
+    let highlighted = app.selected_cart().map(|c| (c.platform, c.stem.clone()));
+    if let Some(cart) = app.selected_cart().filter(|_| *asked != highlighted) {
+        builder.request(cart.clone());
         *asked = highlighted.clone();
     }
     let Some(faces) = builder.take() else {
         return;
     };
-    if highlighted.as_deref() != Some(faces.stem.as_str()) || *built == highlighted {
+    let made = Some((faces.platform, faces.stem.clone()));
+    if highlighted != made || *built == highlighted {
         return;
     }
     let interior_id = upload_rgba(
@@ -2172,7 +2611,79 @@ fn sync_core_picker(
         &faces.lid.rgba,
     );
     app.set_core_board_faces(board_id, lid_id);
-    *built = Some(faces.stem);
+    *built = made;
+}
+
+#[derive(Default)]
+struct BoxArtSync {
+    loader: Option<crate::box_art::BoxArtLoader>,
+    asked: Option<(slot_store::Platform, String)>,
+    tex: [Option<TexId>; 2],
+}
+
+fn sync_box_art(app: &mut App, compositor: &mut Compositor, sync: &mut BoxArtSync) {
+    if !app.two_panels() {
+        return;
+    }
+    let seated = app.seated_cart().cloned();
+    let want = seated.as_ref().map(|c| (c.platform, c.stem.clone()));
+    if want != sync.asked {
+        sync.asked = want;
+        app.set_box_art(None);
+        if let (Some(cart), Some(root)) = (seated, app.root().map(|r| r.to_path_buf())) {
+            sync.loader
+                .get_or_insert_with(crate::box_art::BoxArtLoader::spawn)
+                .request(root, cart);
+        }
+    }
+    let Some(art) = sync.loader.as_ref().and_then(|l| l.take()) else {
+        return;
+    };
+    if sync.asked.as_ref() != Some(&(art.platform, art.stem.clone())) {
+        return;
+    }
+    let [box_tex, logo_tex] = &mut sync.tex;
+    let mut up = |image: Option<crate::box_art::Image>, slot: &mut Option<TexId>| {
+        image.map(|(w, h, rgba)| (upload_rgba(compositor, slot, w, h, &rgba), w, h))
+    };
+    let boxed = up(art.boxed, box_tex);
+    let logo = up(art.logo, logo_tex);
+    app.set_box_art(Some(crate::app::BoxArtFaces {
+        boxed,
+        logo,
+        stem: art.stem,
+        platform: art.platform,
+    }));
+}
+
+#[derive(Default)]
+struct BoxTextSync {
+    shown: Option<(String, String)>,
+    title: Option<TexId>,
+    system: Option<TexId>,
+}
+
+fn sync_box_text(app: &mut App, compositor: &mut Compositor, sync: &mut BoxTextSync) {
+    let want = app.box_text();
+    if want == sync.shown {
+        return;
+    }
+    sync.shown = want.clone();
+    let Some((title, system)) = want else {
+        app.set_box_text_faces(slot_ui::Printed::default(), slot_ui::Printed::default());
+        return;
+    };
+    let mut put = |text: &str, slot: &mut Option<TexId>| {
+        let face = slot_ui::title_line_face(text);
+        let w = face.w;
+        match w {
+            0 => slot_ui::Printed::default(),
+            _ => slot_ui::Printed::new(upload(compositor, slot, face), w),
+        }
+    };
+    let title = put(&title, &mut sync.title);
+    let system = put(&system, &mut sync.system);
+    app.set_box_text_faces(title, system);
 }
 
 fn upload(compositor: &mut Compositor, slot: &mut Option<TexId>, face: slot_ui::UndoFace) -> TexId {
