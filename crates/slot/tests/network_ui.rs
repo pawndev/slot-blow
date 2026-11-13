@@ -58,7 +58,7 @@ fn logged(log: &Log, line: &str) -> bool {
 
 fn open_networks(a: &mut App) {
     a.apply(Action::QuickMenu);
-    for row in [QuickRow::General, QuickRow::Wifi, QuickRow::Networks] {
+    for row in [QuickRow::System, QuickRow::Wifi, QuickRow::Networks] {
         for _ in 0..12 {
             if a.quick_menu() == Some(row) {
                 break;
@@ -712,7 +712,7 @@ fn forgetting_the_only_network_releases_the_radio_on_the_shelf() {
 }
 
 #[test]
-fn the_tools_page_opens_only_while_connected() {
+fn the_tools_page_opens_offline_and_its_rows_wait_for_wifi() {
     let _g = serial();
     let (_d, mut a, _log) = booted(Fake::demo());
     assert!(!a.wifi_up());
@@ -725,17 +725,25 @@ fn the_tools_page_opens_only_while_connected() {
         press(&mut a, Btn::Down);
     }
     press(&mut a, Btn::A);
-    assert_eq!(a.quick_menu(), Some(QuickRow::Network));
+    assert!(a
+        .quick_menu()
+        .is_some_and(|r| r.page() == QuickRow::NETWORK));
+    assert!(a.update_text().is_none());
+    while a.quick_menu() != Some(QuickRow::FetchArt) {
+        press(&mut a, Btn::Down);
+    }
+    press(&mut a, Btn::A);
     assert!(a.update_text().is_some());
+    assert!(a.fetch_art().is_none());
     press(&mut a, Btn::B);
     join(&mut a, "CoffeeShop Guest", "");
     assert!(a.wifi_up());
     press(&mut a, Btn::A);
-    assert_eq!(a.quick_menu(), Some(QuickRow::Server));
+    assert!(a.update_text().is_none());
 }
 
 #[test]
-fn losing_the_connection_moves_the_pointer_off_a_tool() {
+fn losing_the_connection_leaves_the_pointer_on_its_tool() {
     let _g = serial();
     let (_d, mut a, _log) = booted(Fake::demo());
     join(&mut a, "CoffeeShop Guest", "");
@@ -762,14 +770,18 @@ fn losing_the_connection_moves_the_pointer_off_a_tool() {
     a.wifi_send(Cmd::Disconnect);
     settle(&mut a);
     assert!(!a.wifi_up());
-    assert_eq!(a.quick_menu(), Some(QuickRow::Network));
+    assert_eq!(a.quick_menu(), Some(QuickRow::FetchArt));
 }
 
 fn open_scan(a: &mut App) {
     open_networks(a);
     select(a, SCAN_NETWORKS);
     press(a, Btn::A);
-    assert!(matches!(a.phase(), Phase::NetworkScan { .. }), "{:?}", a.phase());
+    assert!(
+        matches!(a.phase(), Phase::NetworkScan { .. }),
+        "{:?}",
+        a.phase()
+    );
     settle(a);
 }
 
@@ -842,13 +854,20 @@ fn b_cancels_the_scan_and_lands_on_the_scan_row() {
     select(&mut a, SCAN_NETWORKS);
     press(&mut a, Btn::A);
     press(&mut a, Btn::B);
-    assert!(matches!(a.phase(), Phase::Networks { .. }), "{:?}", a.phase());
+    assert!(
+        matches!(a.phase(), Phase::Networks { .. }),
+        "{:?}",
+        a.phase()
+    );
     assert_eq!(selected_label(&a), SCAN_NETWORKS);
     settle(&mut a);
     let scans = log.lock().unwrap().iter().filter(|l| *l == "scan").count();
     settle(&mut a);
     settle(&mut a);
-    assert_eq!(log.lock().unwrap().iter().filter(|l| *l == "scan").count(), scans);
+    assert_eq!(
+        log.lock().unwrap().iter().filter(|l| *l == "scan").count(),
+        scans
+    );
 }
 
 #[test]
@@ -1029,7 +1048,7 @@ fn holding_a_on_delete_keeps_deleting() {
     while a.keyboard().unwrap().row() != 0 {
         press(&mut a, Btn::Up);
     }
-    while a.keyboard().unwrap().on_delete() == false {
+    while !a.keyboard().unwrap().on_delete() {
         press(&mut a, Btn::Right);
     }
     hold(&mut a, Btn::A, 1000);

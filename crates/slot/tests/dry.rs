@@ -1,3 +1,5 @@
+mod common;
+
 use slot::app::{App, Phase};
 use slot::audio::Sfx;
 use slot::dry::{paint, text_w, Bench, Dry, Joint, Note, Stage, FIXED, NOTICE, ZONE_W};
@@ -285,13 +287,21 @@ fn turning_dry_batteries_off_in_the_menu_keeps_the_clock_ticking() {
     let mut a = app_with(Platform::Gba, &["Emerald", "Zelda"]);
     a.set_dry(Dry::always(1));
     a.apply(Action::QuickMenu);
-    a.apply(Action::GbaDown(Btn::Down));
-    a.apply(Action::GbaDown(Btn::Down));
-    a.apply(Action::GbaDown(Btn::A));
-    a.apply(Action::GbaDown(Btn::Up));
-    a.apply(Action::GbaDown(Btn::A));
-    a.apply(Action::GbaDown(Btn::Up));
-    assert_eq!(a.quick_menu(), Some(slot_ui::QuickRow::Dry));
+    for row in [slot_ui::QuickRow::Game, slot_ui::QuickRow::Experimental] {
+        common::reach(
+            &mut a,
+            row,
+            |a| a.quick_menu(),
+            |a| a.apply(Action::GbaDown(Btn::Down)),
+        );
+        a.apply(Action::GbaDown(Btn::A));
+    }
+    common::reach(
+        &mut a,
+        slot_ui::QuickRow::Dry,
+        |a| a.quick_menu(),
+        |a| a.apply(Action::GbaDown(Btn::Down)),
+    );
     a.apply(Action::GbaDown(Btn::Right));
     assert_eq!(
         a.quick_value(slot_ui::QuickRow::Dry),

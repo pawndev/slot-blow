@@ -36,12 +36,16 @@ pub enum Toast {
     Forgotten,
     Collection,
     KidUnlocked,
+    TintOff,
+    TintLow,
+    TintMedium,
+    TintHigh,
     Palette(GbColors),
     Duplicate(QuickRow),
 }
 
 impl Toast {
-    const FIXED: [Toast; 28] = [
+    const FIXED: [Toast; 32] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::GameReset,
@@ -70,6 +74,10 @@ impl Toast {
         Toast::Forgotten,
         Toast::Collection,
         Toast::KidUnlocked,
+        Toast::TintOff,
+        Toast::TintLow,
+        Toast::TintMedium,
+        Toast::TintHigh,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -111,6 +119,7 @@ impl Toast {
         match self {
             Toast::CardRepaired | Toast::CardRepairFailed => REPAIR_HOLD_MS,
             Toast::Duplicate(_) => WARNING_HOLD_MS,
+            Toast::TintOff | Toast::TintLow | Toast::TintMedium | Toast::TintHigh => TINT_HOLD_MS,
             _ => crate::hud::HUD_MS,
         }
     }
@@ -163,6 +172,10 @@ impl Toast {
             Toast::Forgotten => "Network forgotten",
             Toast::Collection => "Collection",
             Toast::KidUnlocked => "Kid Mode is off until restart",
+            Toast::TintOff => "Wallpaper Tint: Off",
+            Toast::TintLow => "Wallpaper Tint: 25%",
+            Toast::TintMedium => "Wallpaper Tint: 45%",
+            Toast::TintHigh => "Wallpaper Tint: 65%",
             Toast::Palette(p) => p.label(),
             Toast::Duplicate(_) => "",
         }
@@ -175,6 +188,7 @@ fn bound_rows() -> impl Iterator<Item = QuickRow> {
 
 const REPAIR_HOLD_MS: crate::hud::Millis = 6_000;
 const WARNING_HOLD_MS: crate::hud::Millis = 4_000;
+pub const TINT_HOLD_MS: crate::hud::Millis = 1_000;
 
 const TOAST_W: u32 = 400;
 const TOAST_H: u32 = 28;
@@ -256,7 +270,10 @@ pub fn toast_box(toast: Toast) -> (u32, u32) {
 
 fn toast_box_lines(toast: Toast, lines: usize) -> (u32, u32) {
     let s = setting(toast);
-    (s.w + 2 * HALO_PX, s.h * lines as u32 + detail_h(toast) + 2 * HALO_PX)
+    (
+        s.w + 2 * HALO_PX,
+        s.h * lines as u32 + detail_h(toast) + 2 * HALO_PX,
+    )
 }
 
 fn detail_h(toast: Toast) -> u32 {
@@ -416,7 +433,11 @@ mod tests {
                 layout.px,
                 s.w
             );
-            assert!(layout.lines.len() <= s.lines, "{t:?} took {} lines", layout.lines.len());
+            assert!(
+                layout.lines.len() <= s.lines,
+                "{t:?} took {} lines",
+                layout.lines.len()
+            );
             let w = ink_width(t);
             assert!(w <= s.w, "{:?} is {w} px wide in a {} px box", t, s.w);
         }

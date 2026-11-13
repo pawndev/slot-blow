@@ -7,11 +7,11 @@ use slot_input::{Action, Btn, RawEvent, MENU_DOUBLE_TAP_MS, MUTE_CHORD_MS};
 use slot_power::{Battery, Charge, LedState, LidPolicy, Power, RepairResult};
 use slot_retro::LinkChannel;
 use slot_store::{
-    format_stamp, parse_stamp, read_slot_state, scan, write_slot_state, AutoLoad, BezelPick, Blending, Cart,
-    Collection, Core, GbColors, KidMode, Platform, Recent, Scale, Shader, ShelfMode, ShotDir, ShotEntry,
-    SlotState, StateEntry,
-    StateRing, Stretch, WallpaperPick, WallpaperTint, BLUE_LIGHT_MAX, BRIGHTNESS_MAX, CONTRAST_MAX,
-    DIM_MAX, FF_SPEEDS, RING_MAX, SATURATION_MAX, SUNLIGHT_MAX, VOLUME_MAX,
+    format_stamp, parse_stamp, read_slot_state, scan, write_slot_state, BatteryDisplay, BezelPick,
+    Blending, Cart, Collection, Core, GbColors, KidMode, Platform, Recent, Scale, Shader,
+    ShelfMode, ShotDir, ShotEntry, SlotState, StateEntry, StateRing, Stretch, WallpaperPick,
+    WallpaperTint, BLUE_LIGHT_MAX, BRIGHTNESS_MAX, CONTRAST_MAX, DIM_MAX, FF_SPEEDS, RING_MAX,
+    SATURATION_MAX, SUNLIGHT_MAX, VOLUME_MAX,
 };
 use slot_ui::{
     board_from_shaped, draw_empty_slot, draw_footer, draw_ground, draw_sticker, ease, footer_ink,
@@ -22,10 +22,15 @@ use slot_ui::{
     GBA_SEATS, HINT_EDGE, HOP_LIFT, MOUTH_H, REPEAT_DELAY_MS, SHADOW_H, SHADOW_W, TURN_PAD,
 };
 
+use crate::art::jobs::{no_art_jobs, ArtEvent, ArtJob, ArtJobs};
+use crate::art::make::Kind as ArtKind;
 use crate::audio::Sfx;
 use crate::core_picker::{Chip, CorePicker, Outcome, Press};
 use crate::dry::{self, Bench, Dry};
 use crate::dust::{self, Dust, Glitch};
+use crate::fetch_art::{
+    stage_at, FetchArt, FetchTex, Landed as ArtLanded, Run as ArtRun, Scene as ArtScene, Stage,
+};
 use crate::link_kind::{link_carried, link_dual, link_kind, serial_option, LinkKind};
 use crate::link_radio::{radio_jobs, LinkRole, RadioJob, RadioJobs};
 use crate::link_screen::LinkSprites;
@@ -33,12 +38,9 @@ use crate::link_start::{link_port, LinkFail, LinkProgress, LinkStarter, LinkStep
 use crate::loading_mark::LoadingMark;
 use crate::persist::{self, Snapshot};
 use crate::print_scene::{print_draws, Cue, PrintArtState, PrintFrame, PrintTextures};
-use crate::unwrap_scene::{unwrap_draws, UnwrapScene, UnwrapTextures};
-use crate::server::{ServerNet, ServerPaper, ServerSession};
-use crate::art::jobs::{no_art_jobs, ArtEvent, ArtJob, ArtJobs};
 use crate::romm::{no_romm_jobs, PairFail, RommEvent, RommJob, RommJobs};
-use crate::art::make::Kind as ArtKind;
-use crate::fetch_art::{stage_at, FetchArt, FetchTex, Landed as ArtLanded, Run as ArtRun, Scene as ArtScene, Stage};
+use crate::server::{ServerNet, ServerPaper, ServerSession};
+use crate::unwrap_scene::{unwrap_draws, UnwrapScene, UnwrapTextures};
 use crate::update::{
     no_update_jobs, Kind, Release, UpdateEvent, UpdateFail, UpdateJob, UpdateJobs,
 };
@@ -67,6 +69,7 @@ pub const EJECT_S: f32 = SEATED_AT;
 
 const EJECT_HOLD_S: f32 = 0.35;
 const DS_INSERT_FLY_S: f32 = 1.8;
+const DS_PART_S: f32 = 0.3;
 const DS_EJECT_FLY_S: f32 = 1.8;
 const DS_CLICK_GAP_S: f32 = 0.53;
 
@@ -96,6 +99,9 @@ const BLANK_DIM: f32 = 0.1;
 const VOLUME_STEP: u8 = 5;
 
 const AUTOSAVE_MS: Millis = 60_000;
+const PEEK_IN_MS: Millis = 120;
+const PEEK_HOLD_MS: Millis = 680;
+const PEEK_OUT_MS: Millis = 200;
 const RESUME_MS: Millis = 300_000;
 const SETTLED_MS: Millis = 10_000;
 const CARD_CHECK_MS: Millis = 2_000;
@@ -356,6 +362,8 @@ pub enum Snag {
     Dust(u64),
     Dry(u64),
 }
+
+pub type NameFace = (String, [(TexId, u32, u32); 2]);
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BoxArtFaces {
@@ -618,7 +626,7 @@ pub struct App {
     glide: Option<(f32, Millis)>,
     leaving: Option<(Leaving, Millis)>,
     press: Option<(Btn, Millis)>,
-    name_faces: Vec<(String, [(TexId, u32, u32); 2])>,
+    name_faces: Vec<NameFace>,
     add_faces: Option<([(TexId, u32); 2], usize)>,
     count_badge: Option<((TexId, f32, f32), usize)>,
     core_board_face: Option<TexId>,
@@ -671,7 +679,6 @@ pub struct App {
     snapshot: Option<Box<dyn Snapshot>>,
     core: Core,
     colour_pending: Option<bool>,
-    blending_pending: Option<Blending>,
     palette_live: bool,
     palette_pending: Option<GbColors>,
     sunlight_manual: Option<u8>,
@@ -711,6 +718,7 @@ pub struct App {
     footer_row: Option<QuickRow>,
     states_from_menu: bool,
     menu_tap: Option<(Millis, Option<QuickRow>)>,
+    tint_peek: Option<Millis>,
     sticker_face: Option<(TexId, u32, u32)>,
     ground: Option<TexId>,
     ground_w: u32,
@@ -750,10 +758,10 @@ pub struct App {
     pending_save: Option<std::thread::JoinHandle<()>>,
     eject_write: Option<std::thread::JoinHandle<bool>>,
     two_panels: bool,
+    bottom_lit: Option<bool>,
     ds_slot_faces: Option<(TexId, TexId)>,
     box_art: Option<BoxArtFaces>,
-    box_title: slot_ui::Printed,
-    box_system: slot_ui::Printed,
+    ds_landed: Option<f64>,
     card_writes: Arc<crate::card_log::CardWrites>,
     resume_unread: bool,
     card_read_only: bool,
@@ -921,19 +929,19 @@ fn shelves_of(carts: Vec<Cart>, collections: usize) -> Vec<(Rack, Shelf)> {
         .collect()
 }
 
+const SHELF_FALLBACK_WALLPAPER: &str = "default";
+
 fn wallpaper_of_rack(rack: Rack, files: &[String]) -> Option<String> {
-    let rack = match rack {
-        Rack::Collection(_) => Rack::Favorites,
-        rack => rack,
-    };
     std::iter::once(rack)
         .chain(rack.platform().map(|p| Rack::Of(p.hardware())))
-        .find_map(|rack| {
+        .map(|rack| rack.key())
+        .chain(std::iter::once(SHELF_FALLBACK_WALLPAPER.to_owned()))
+        .find_map(|key| {
             files
                 .iter()
                 .find(|file| {
                     file.rsplit_once('.')
-                        .is_some_and(|(stem, _)| stem.eq_ignore_ascii_case(&rack.key()))
+                        .is_some_and(|(stem, _)| stem.eq_ignore_ascii_case(&key))
                 })
                 .cloned()
         })
@@ -1180,7 +1188,6 @@ impl App {
             snapshot: None,
             core: Core::default(),
             colour_pending: None,
-            blending_pending: None,
             palette_live: false,
             palette_pending: None,
             sunlight_manual: None,
@@ -1220,6 +1227,7 @@ impl App {
             footer_row: None,
             states_from_menu: false,
             menu_tap: None,
+            tint_peek: None,
             sticker_face: None,
             ground: None,
             ground_w: OUT_W,
@@ -1259,10 +1267,10 @@ impl App {
             pending_save: None,
             eject_write: None,
             two_panels: false,
+            bottom_lit: None,
             ds_slot_faces: None,
             box_art: None,
-            box_title: slot_ui::Printed::default(),
-            box_system: slot_ui::Printed::default(),
+            ds_landed: None,
             card_writes,
             resume_unread: false,
             card_read_only: false,
@@ -1297,12 +1305,17 @@ impl App {
         app.root = Some(root.to_path_buf());
         app.loading = loading;
         app.state = read_slot_state(root);
+        let turbo_off = slot_store::legacy_turbo_off(root);
+        app.give_wallpapers(root);
         tell_libc_the_zone(app.state.zone);
         app.romm = crate::romm::RommConf::load(root);
         app.gifts = crate::romm::Gifts::load(root);
         app.carousel = read_carousel(root);
         app.shortcuts = read_shortcuts(root);
         app.controls = read_controls(root);
+        if turbo_off {
+            app.turbo_off_moves_to_controls(root);
+        }
         app.install_collections(slot_store::read_collections(root));
         app.restock_recents();
         app.restock_favorites();
@@ -1357,7 +1370,7 @@ impl App {
             Some((at, i)) => {
                 self.shelf_at = at;
                 self.shelf_mut().select(i);
-                self.insert(!self.state.auto_load.at_power_on());
+                self.insert(!self.state.resume_power_on);
                 if let Phase::Inserting {
                     resumed, t, snag, ..
                 } = &mut self.phase
@@ -1459,7 +1472,9 @@ impl App {
                     self.held_dir = Some((b, self.now() + REPEAT_DELAY_MS, 0));
                 }
             }
-            Action::GbaDown(b @ (Btn::A | Btn::B | Btn::L1 | Btn::R1)) if self.keyboard.is_some() => {
+            Action::GbaDown(b @ (Btn::A | Btn::B | Btn::L1 | Btn::R1))
+                if self.keyboard.is_some() =>
+            {
                 if self.held_dir.map(|(held, ..)| held) != Some(b) {
                     self.held_dir = Some((b, self.now() + REPEAT_DELAY_MS, 0));
                 }
@@ -1849,12 +1864,15 @@ impl App {
 
     fn remove_from_collection(&mut self) {
         let Some(crate::editing::Edit::Removing {
-            game, collection: i, ..
+            game,
+            collection: i,
+            ..
         }) = self.edit.take()
         else {
             return;
         };
-        let around = crate::editing::remove_stack(&self.shelf_games(self.shelf_at), self.shelf().index);
+        let around =
+            crate::editing::remove_stack(&self.shelf_games(self.shelf_at), self.shelf().index);
         if !self.collections[i].remove(&game) {
             return;
         }
@@ -1889,11 +1907,7 @@ impl App {
     fn after_emptied(&self, at: usize) -> usize {
         if self.state.shelf_mode == ShelfMode::All {
             let stack = self.stack();
-            if let Some(&to) = stack
-                .iter()
-                .find(|&&s| s > at)
-                .or_else(|| stack.first())
-            {
+            if let Some(&to) = stack.iter().find(|&&s| s > at).or_else(|| stack.first()) {
                 return to;
             }
         }
@@ -1972,8 +1986,13 @@ impl App {
             Some(Edit::Removing { .. }) => match action {
                 Action::GbaDown(Btn::A) => self.remove_from_collection(),
                 Action::GbaDown(Btn::B) => {
-                    if let Some(crate::editing::Edit::Removing { game, last, .. }) = self.edit.take() {
-                        let around = crate::editing::remove_stack(&self.shelf_games(self.shelf_at), self.shelf().index);
+                    if let Some(crate::editing::Edit::Removing { game, last, .. }) =
+                        self.edit.take()
+                    {
+                        let around = crate::editing::remove_stack(
+                            &self.shelf_games(self.shelf_at),
+                            self.shelf().index,
+                        );
                         self.leaving = Some((Leaving::Kept { game, around, last }, now));
                     }
                 }
@@ -2016,8 +2035,8 @@ impl App {
             return;
         }
         self.tick_move(now);
-        let (Some(Edit::MovingGame { hold, done, .. }) | Some(Edit::MovingCollection { hold, done, .. })) =
-            self.edit.as_mut()
+        let (Some(Edit::MovingGame { hold, done, .. })
+        | Some(Edit::MovingCollection { hold, done, .. })) = self.edit.as_mut()
         else {
             return;
         };
@@ -2277,9 +2296,13 @@ impl App {
             Action::GbaDown(Btn::B) => return self.back_out(),
             _ => return,
         };
-        let from = self.choosing().and_then(|(_, choices, at)| match crate::editing::layout(choices.len()) {
-            crate::editing::Layout::Carousel => Some(self.canvas().w / 2.0 + step as f32 * ROW_GAP),
-            layout => self.choice_x(layout, at, at, choices.len()),
+        let from = self.choosing().and_then(|(_, choices, at)| {
+            match crate::editing::layout(choices.len()) {
+                crate::editing::Layout::Carousel => {
+                    Some(self.canvas().w / 2.0 + step as f32 * ROW_GAP)
+                }
+                layout => self.choice_x(layout, at, at, choices.len()),
+            }
         });
         if let Some(Edit::Choosing { choices, at, .. }) = self.edit.as_mut() {
             *at = crate::editing::step_pick(*at, step, choices.len());
@@ -2644,9 +2667,6 @@ impl App {
         if !self.left_stick {
             hidden.push(QuickRow::LeftStick);
         }
-        if !self.state.turbo {
-            hidden.extend([QuickRow::GameTurboA, QuickRow::GameTurboB]);
-        }
         if !self.has_states || self.link_active() {
             hidden.push(QuickRow::States);
         }
@@ -2818,13 +2838,8 @@ impl App {
             QuickRow::GbcShader => Some(shader_value(self.state.shader_gbc)),
             QuickRow::Rumble => Some(QuickValue::flag(self.state.rumble)),
             QuickRow::LeftStick => Some(QuickValue::flag(self.state.left_stick_dpad)),
-            QuickRow::AutoLoad => Some(match self.state.auto_load {
-                AutoLoad::Always => QuickValue::Always,
-                AutoLoad::PowerOn => QuickValue::PowerOn,
-                AutoLoad::Never => QuickValue::Never,
-            }),
-            QuickRow::EjectSave => Some(QuickValue::flag(self.state.eject_save)),
-            QuickRow::Turbo => Some(QuickValue::flag(self.state.turbo)),
+            QuickRow::ResumeInsert => Some(QuickValue::flag(self.state.resume_insert)),
+            QuickRow::ResumePowerOn => Some(QuickValue::flag(self.state.resume_power_on)),
             QuickRow::Dusty => Some(QuickValue::flag(self.state.dusty)),
             QuickRow::Dry => Some(QuickValue::flag(self.state.dry)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
@@ -2846,6 +2861,11 @@ impl App {
                 QuickValue::Show
             } else {
                 QuickValue::Hide
+            }),
+            QuickRow::BatteryDisplay => Some(match self.state.battery_display {
+                BatteryDisplay::Both => QuickValue::Both,
+                BatteryDisplay::Icon => QuickValue::Icon,
+                BatteryDisplay::Percent => QuickValue::Percentage,
             }),
             QuickRow::WallpaperTint => Some(match self.state.wallpaper_tint {
                 WallpaperTint::Off => QuickValue::Off,
@@ -2911,6 +2931,7 @@ impl App {
             | QuickRow::GbaBezel
             | QuickRow::Bezel
             | QuickRow::General
+            | QuickRow::System
             | QuickRow::ShelfPrev
             | QuickRow::ShelfNext
             | QuickRow::ShelfFavorite
@@ -2994,7 +3015,7 @@ impl App {
         }
         let wifi = self.wifi_up().then(|| self.wifi_face()).flatten();
         let face = self.kid_icon_faces.map(|f| f[usize::from(self.light())]);
-        slot_ui::draw_kid_icon(self.canvas(), self.battery_percent, wifi, face, out);
+        slot_ui::draw_kid_icon(self.canvas(), self.gauge(), wifi, face, out);
     }
 
     pub fn set_kid_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
@@ -3293,11 +3314,20 @@ impl App {
 
     fn cycle_overlay(&mut self, platform: Platform, right: bool) {
         let mut choices: Vec<Option<String>> = vec![None];
-        choices.extend(self.overlay_entries(platform).into_iter().map(|e| Some(e.name)));
+        choices.extend(
+            self.overlay_entries(platform)
+                .into_iter()
+                .map(|e| Some(e.name)),
+        );
         let now = self.resolved_overlay(platform).map(|e| e.name);
         let at = choices.iter().position(|c| *c == now).unwrap_or(0);
         let n = choices.len();
-        *self.overlay_pick(platform) = choices[if right { (at + 1) % n } else { (at + n - 1) % n }].clone();
+        *self.overlay_pick(platform) = choices[if right {
+            (at + 1) % n
+        } else {
+            (at + n - 1) % n
+        }]
+        .clone();
     }
 
     pub fn set_quick_overlay_faces(
@@ -3393,6 +3423,25 @@ impl App {
         self.root().map(crate::wallpaper::list).unwrap_or_default()
     }
 
+    fn give_wallpapers(&mut self, root: &Path) {
+        if self.state.wallpapers_given {
+            return;
+        }
+        if let Err(e) = crate::wallpaper::give(root) {
+            eprintln!("slot: wallpapers: {e}");
+            return;
+        }
+        self.state.wallpaper = match &self.state.wallpaper {
+            WallpaperPick::Default => WallpaperPick::File(crate::wallpaper::SLOT_FILE.into()),
+            WallpaperPick::Blur => WallpaperPick::File(crate::wallpaper::SLOT_BLUR_FILE.into()),
+            other => other.clone(),
+        };
+        self.state.wallpapers_given = true;
+        if let Err(e) = write_slot_state(root, &self.state) {
+            eprintln!("slot: slot.state: {e}");
+        }
+    }
+
     pub fn wallpaper(&self) -> WallpaperPick {
         self.state.wallpaper.clone()
     }
@@ -3400,7 +3449,7 @@ impl App {
     pub fn resolved_wallpaper(&self) -> WallpaperPick {
         match &self.state.wallpaper {
             WallpaperPick::File(name) if !self.wallpaper_files().iter().any(|n| n == name) => {
-                WallpaperPick::Default
+                WallpaperPick::None
             }
             other => other.clone(),
         }
@@ -3441,7 +3490,6 @@ impl App {
         let name = &self.collections[i].name;
         self.collection_pngs
             .iter()
-            .cloned()
             .find(|file| {
                 file.rsplit_once('.')
                     .is_some_and(|(stem, _)| stem.eq_ignore_ascii_case(name))
@@ -3497,12 +3545,10 @@ impl App {
             WallpaperPick::None,
             WallpaperPick::Random,
             WallpaperPick::Shelf,
-            WallpaperPick::Default,
-            WallpaperPick::Blur,
         ];
         choices.extend(self.wallpaper_files().into_iter().map(WallpaperPick::File));
         let key = self.resolved_wallpaper().key();
-        let at = choices.iter().position(|c| c.key() == key).unwrap_or(3);
+        let at = choices.iter().position(|c| c.key() == key).unwrap_or(0);
         let n = choices.len();
         let next = if right {
             (at + 1) % n
@@ -3515,14 +3561,20 @@ impl App {
     fn grounds(&self) -> [Option<(TexId, u32)>; 3] {
         let ground = self.ground.map(|t| (t, self.ground_w));
         let blur = self.blur.map(|t| (t, self.ground_w)).or(ground);
-        let own = self
-            .wallpaper
-            .map(|t| (t, self.wallpaper_size().0))
-            .or(ground);
+        let own = self.wallpaper.map(|t| (t, self.wallpaper_size().0));
         [ground, blur, own]
     }
 
-    fn menu_ground(&self) -> Option<(TexId, u32)> {
+    fn menu_ground(&self) -> Option<slot_ui::MenuGround> {
+        let tint = match self.own_wallpaper_shown() {
+            true => tint_alpha(self.state.wallpaper_tint),
+            false => 0.0,
+        };
+        self.menu_backdrop()
+            .map(|(tex, w)| slot_ui::MenuGround { tex, w, tint })
+    }
+
+    fn menu_backdrop(&self) -> Option<(TexId, u32)> {
         let [_, blur, own] = self.grounds();
         if self.collection_wallpaper.is_some() {
             return own;
@@ -3530,8 +3582,8 @@ impl App {
         match &self.state.wallpaper {
             WallpaperPick::None => None,
             WallpaperPick::Default | WallpaperPick::Blur => blur,
-            WallpaperPick::Random if !self.random_drawn() => blur,
-            WallpaperPick::Shelf if self.shelf_wallpaper.is_none() => blur,
+            WallpaperPick::Random if !self.random_drawn() => None,
+            WallpaperPick::Shelf if self.shelf_wallpaper.is_none() => None,
             WallpaperPick::File(_) | WallpaperPick::Random | WallpaperPick::Shelf => own,
         }
     }
@@ -3542,8 +3594,8 @@ impl App {
             _ if self.collection_wallpaper.is_some() => own,
             WallpaperPick::None => None,
             WallpaperPick::Default => ground,
-            WallpaperPick::Random if !self.random_drawn() => ground,
-            WallpaperPick::Shelf if self.shelf_wallpaper.is_none() => ground,
+            WallpaperPick::Random if !self.random_drawn() => None,
+            WallpaperPick::Shelf if self.shelf_wallpaper.is_none() => None,
             WallpaperPick::Blur => blur,
             WallpaperPick::File(_) | WallpaperPick::Random | WallpaperPick::Shelf => own,
         };
@@ -3628,9 +3680,6 @@ impl App {
         }
         if !self.left_stick {
             hidden.push(QuickRow::LeftStick);
-        }
-        if !self.state.turbo {
-            hidden.extend([QuickRow::GameTurboA, QuickRow::GameTurboB]);
         }
         if !self.server_allowed() {
             hidden.push(QuickRow::Server);
@@ -3771,7 +3820,11 @@ impl App {
 
     fn slot_faces_for(&self, stem: &str) -> Option<(TexId, TexId)> {
         #[cfg(feature = "nds")]
-        if self.shelf().find(stem).is_some_and(|(c, _)| c.platform == Platform::Nds) {
+        if self
+            .shelf()
+            .find(stem)
+            .is_some_and(|(c, _)| c.platform == Platform::Nds)
+        {
             return self.top_slot_faces();
         }
         let _ = stem;
@@ -3841,6 +3894,14 @@ impl App {
 
     pub fn set_battery_percent_face(&mut self, face: TexId, w: u32) {
         self.battery_percent = slot_ui::Printed::new(face, w);
+    }
+
+    fn gauge(&self) -> slot_ui::Gauge {
+        slot_ui::Gauge {
+            battery: self.battery,
+            percent: self.battery_percent,
+            display: self.state.battery_display,
+        }
     }
 
     pub fn set_shelf_clock_face(&mut self, face: TexId, w: u32) {
@@ -4285,15 +4346,9 @@ impl App {
                 &self.shortcuts,
                 &self.carousel,
                 self.state.kid_mode,
-                self.state.turbo,
             );
         }
-        crate::input::Table::new(
-            &self.controls,
-            &self.shortcuts,
-            &self.carousel,
-            self.state.turbo,
-        )
+        crate::input::Table::new(&self.controls, &self.shortcuts, &self.carousel)
     }
 
     pub fn input_context(&self) -> slot_input::Context {
@@ -4542,12 +4597,25 @@ impl App {
         self.link.as_ref().map(|s| s.client_id)
     }
 
-    pub fn may_rewind(&self) -> bool {
-        self.state.rewind && !self.link_active()
+    fn turbo_off_moves_to_controls(&mut self, root: &Path) {
+        self.controls.set_game(GameButton::TurboA, None);
+        self.controls.set_game(GameButton::TurboB, None);
+        let written = write_controls(root, &self.controls);
+        self.card_writes.wrote("controls", &written);
+        if let Err(e) = written {
+            eprintln!("slot: turbo off: controls: {e}");
+            return;
+        }
+        let written = write_slot_state(root, &self.state);
+        self.card_writes.wrote("state", &written);
+        match written {
+            Ok(()) => eprintln!("slot: turbo off moved to unbound Turbo A and Turbo B"),
+            Err(e) => eprintln!("slot: turbo off: state: {e}"),
+        }
     }
 
-    pub fn turbo(&self) -> bool {
-        self.state.turbo
+    pub fn may_rewind(&self) -> bool {
+        self.state.rewind && !self.link_active()
     }
 
     pub fn records_rewind(&self) -> bool {
@@ -4799,7 +4867,23 @@ impl App {
     }
 
     pub fn blending_in_play(&self) -> Blending {
-        self.blending_for(self.playing_platform()).on(self.core)
+        self.blending_for(self.playing_platform())
+    }
+
+    pub fn frame_blend(&self) -> slot_gfx::FrameBlend {
+        match self.blending_in_play() {
+            Blending::Off => slot_gfx::FrameBlend::Off,
+            Blending::Mix => slot_gfx::FrameBlend::Mix,
+            Blending::Ghosting => slot_gfx::FrameBlend::Ghosting,
+        }
+    }
+
+    pub fn lcd(&self) -> slot_gfx::Lcd {
+        match self.playing_platform().hardware() {
+            Platform::Gb => slot_gfx::Lcd::Dmg,
+            Platform::Gbc => slot_gfx::Lcd::Gbc,
+            _ => slot_gfx::Lcd::Gba,
+        }
     }
 
     pub fn light(&self) -> bool {
@@ -4906,10 +4990,6 @@ impl App {
 
     pub fn take_colour_correction(&mut self) -> Option<bool> {
         self.colour_pending.take()
-    }
-
-    pub fn take_blending(&mut self) -> Option<Blending> {
-        self.blending_pending.take()
     }
 
     pub fn sunlight(&self) -> Option<u8> {
@@ -5231,7 +5311,9 @@ impl App {
                 {
                     self.open_moving(now)
                 }
-                _ if self.edit.is_some() && self.core_picker.is_none() => self.edit_input(action, now),
+                _ if self.edit.is_some() && self.core_picker.is_none() => {
+                    self.edit_input(action, now)
+                }
                 Action::SelectTap if self.core_picker.is_none() => self.open_studio(),
                 Action::GbaDown(Btn::Start) if self.core_picker.is_none() => {
                     self.open_core_picker()
@@ -5253,11 +5335,11 @@ impl App {
                 Action::GbaDown(Btn::A) => self.play_held = Some(now),
                 Action::GbaUp(Btn::A) => {
                     if self.play_held.take().is_some() && !self.unwrap_seated() {
-                        self.insert(!self.state.auto_load.on_insert());
+                        self.insert(!self.state.resume_insert);
                     }
                 }
                 Action::Insert if !self.unwrap_seated() => {
-                    self.insert(!self.state.auto_load.on_insert());
+                    self.insert(!self.state.resume_insert);
                 }
                 _ => {}
             },
@@ -5352,6 +5434,14 @@ impl App {
                 _ => {}
             }
         }
+        match (row, action) {
+            (QuickRow::WallpaperTint, Action::GbaDown(btn @ (Btn::Left | Btn::Right))) => {
+                self.change_setting(row, btn == Btn::Right);
+                return self.peek_tint();
+            }
+            (_, Action::GbaDown(_)) if self.tint_peek.take().is_some() => self.hud.hush(),
+            _ => {}
+        }
         let row = match action {
             Action::GbaDown(Btn::Up) => row.up(&self.hidden_rows()),
             Action::GbaDown(Btn::Down) => row.down(&self.hidden_rows()),
@@ -5368,6 +5458,61 @@ impl App {
             _ => return,
         };
         self.phase = Phase::QuickMenu { row };
+    }
+
+    fn peek_tint(&mut self) {
+        let now = self.now();
+        let into = (self.tint_peek_alpha(now) * PEEK_IN_MS as f32) as Millis;
+        self.tint_peek = Some(now.saturating_sub(into));
+        let said = match self.state.wallpaper_tint {
+            WallpaperTint::Off => Toast::TintOff,
+            WallpaperTint::Low => Toast::TintLow,
+            WallpaperTint::Medium => Toast::TintMedium,
+            WallpaperTint::High => Toast::TintHigh,
+        };
+        self.hud.toast(said, now);
+    }
+
+    pub fn tint_peek_alpha(&self, now: Millis) -> f32 {
+        let Some(at) = self.tint_peek else {
+            return 0.0;
+        };
+        let t = now.saturating_sub(at);
+        if t < PEEK_IN_MS {
+            t as f32 / PEEK_IN_MS as f32
+        } else if t < PEEK_IN_MS + PEEK_HOLD_MS {
+            1.0
+        } else {
+            let out = t - PEEK_IN_MS - PEEK_HOLD_MS;
+            (1.0 - out as f32 / PEEK_OUT_MS as f32).max(0.0)
+        }
+    }
+
+    fn draw_tint_peek(&self, out: &mut Vec<Draw>) {
+        let alpha = self.tint_peek_alpha(self.now());
+        let Some((tex, tex_w)) = self.menu_backdrop().filter(|_| alpha > 0.0) else {
+            return;
+        };
+        let canvas = self.canvas();
+        out.push(Draw::Part {
+            x: 0.0,
+            y: 0.0,
+            w: canvas.w,
+            h: canvas.h,
+            tex,
+            alpha,
+            uv: canvas.cover(tex_w as f32),
+        });
+        let tint = tint_alpha(self.state.wallpaper_tint);
+        if tint > 0.0 && self.own_wallpaper_shown() {
+            out.push(Draw::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: canvas.w,
+                h: canvas.h,
+                colour: [0.0, 0.0, 0.0, tint * alpha],
+            });
+        }
     }
 
     fn in_game_menu_input(&mut self, row: QuickRow, action: Action) {
@@ -5458,6 +5603,13 @@ impl App {
 
     fn open_quick_row(&mut self, row: QuickRow) {
         match row {
+            QuickRow::Server | QuickRow::Romm | QuickRow::FetchArt if !self.wifi_up() => {
+                self.set_update(Some(UpdateState::Notice(NetNotice::NoNetwork)));
+            }
+            #[cfg(feature = "nds")]
+            QuickRow::FetchBoxArt if !self.wifi_up() => {
+                self.set_update(Some(UpdateState::Notice(NetNotice::NoNetwork)));
+            }
             QuickRow::DateTime => {
                 self.phase = clock_screen(self.utc_secs(), &self.state, self.has_saved(), true);
             }
@@ -5467,9 +5619,6 @@ impl App {
             QuickRow::FetchBoxArt => self.open_fetch_box_art(),
             QuickRow::CheckUpdates => self.open_check_for_updates(),
             QuickRow::Server => self.open_server(),
-            QuickRow::Network if !self.wifi_up() => {
-                self.set_update(Some(UpdateState::Notice(NetNotice::NoNetwork)));
-            }
             QuickRow::WifiPower => self.set_wifi_off(!self.state.wifi_off),
             QuickRow::Networks => self.open_networks(),
             QuickRow::RommProtocol | QuickRow::RommSelfSigned => self.change_setting(row, true),
@@ -5506,6 +5655,7 @@ impl App {
             | QuickRow::ScreenGb
             | QuickRow::Shortcuts
             | QuickRow::General
+            | QuickRow::System
             | QuickRow::Network
             | QuickRow::Romm
             | QuickRow::Wifi
@@ -5527,9 +5677,8 @@ impl App {
             | QuickRow::PlayBlueLight
             | QuickRow::PlaySaturation
             | QuickRow::PlayContrast
-            | QuickRow::AutoLoad
-            | QuickRow::EjectSave
-            | QuickRow::Turbo
+            | QuickRow::ResumeInsert
+            | QuickRow::ResumePowerOn
             | QuickRow::Rewind
             | QuickRow::FastForward
             | QuickRow::FastForwardSound
@@ -5548,6 +5697,7 @@ impl App {
             | QuickRow::Recents
             | QuickRow::ShelfMode
             | QuickRow::ShowTitles
+            | QuickRow::BatteryDisplay
             | QuickRow::KidMode
             | QuickRow::KidShelf
             | QuickRow::Wallpaper
@@ -5654,7 +5804,6 @@ impl App {
                 Platform::Gbc => self.state.blending_gbc = to,
                 _ => self.state.blending_gba = to,
             }
-            self.blending_pending = Some(self.blending_in_play());
             self.persist();
             return;
         }
@@ -5829,25 +5978,22 @@ impl App {
             }
             QuickRow::Rumble => s.rumble = !s.rumble,
             QuickRow::LeftStick => s.left_stick_dpad = !s.left_stick_dpad,
-            QuickRow::AutoLoad => s.auto_load = s.auto_load.step(right),
-            QuickRow::EjectSave => s.eject_save = !s.eject_save,
-            QuickRow::Turbo => s.turbo = !s.turbo,
+            QuickRow::ResumeInsert => s.resume_insert = !s.resume_insert,
+            QuickRow::ResumePowerOn => s.resume_power_on = !s.resume_power_on,
             QuickRow::Dusty => s.dusty = !s.dusty,
             QuickRow::Dry => s.dry = !s.dry,
             QuickRow::Rewind => s.rewind = !s.rewind,
             QuickRow::GbaBlending => {
-                s.blending_gba = s.blending_gba.step(&Blending::MGBA, right);
-                self.blending_pending = Some(self.blending_in_play());
+                s.blending_gba = s.blending_gba.step(&Blending::ALL, right);
             }
             QuickRow::GbcBlending => {
-                s.blending_gbc = s.blending_gbc.step(&Blending::MGBA, right);
-                self.blending_pending = Some(self.blending_in_play());
+                s.blending_gbc = s.blending_gbc.step(&Blending::ALL, right);
             }
             QuickRow::GbBlending => {
-                s.blending_gb = s.blending_gb.step(&Blending::MGBA, right);
-                self.blending_pending = Some(self.blending_in_play());
+                s.blending_gb = s.blending_gb.step(&Blending::ALL, right);
             }
             QuickRow::Theme => s.appearance = s.appearance.toggle(),
+            QuickRow::BatteryDisplay => s.battery_display = s.battery_display.step(right),
             QuickRow::WallpaperTint => s.wallpaper_tint = s.wallpaper_tint.step(right),
             QuickRow::ScreenGeneral
             | QuickRow::Brightness
@@ -5903,6 +6049,7 @@ impl App {
             | QuickRow::Stretch
             | QuickRow::Bezel
             | QuickRow::General
+            | QuickRow::System
             | QuickRow::ShelfPrev
             | QuickRow::ShelfNext
             | QuickRow::ShelfFavorite
@@ -6267,6 +6414,7 @@ impl App {
         }
         self.timers();
         self.poll_link();
+        self.sync_bottom_backlight();
         let now = self.now();
         self.tick_move(now);
         let lead = match (&self.edit, self.move_view(now)) {
@@ -6413,6 +6561,9 @@ impl App {
             self.sfx = Some(sounded(cue));
         }
         if let Some(phase) = next {
+            if matches!(self.phase, Phase::Ejecting { .. }) && self.two_panels && self.ds_seated() {
+                self.ds_landed = Some(self.clock);
+            }
             self.phase = phase;
             self.refused_from = None;
             match self.phase {
@@ -7058,11 +7209,13 @@ impl App {
             (Screen::Bottom, false) if self.ds_flying() => self.draw_ds_fling_bottom(out),
             (Screen::Bottom, false) if self.ds_powering_on() => self.draw_ds_power_bottom(out),
             (Screen::Top, false) if ds => single(out),
-            (Screen::Top, false) if gaming && self.screen > 0.0 && self.panel_lit() => out.push(Draw::Game),
+            (Screen::Top, false) if gaming && self.screen > 0.0 && self.panel_lit() => {
+                out.push(Draw::Game)
+            }
             (Screen::Top, false) if dud && self.screen > 0.0 => out.push(Draw::Game),
             (Screen::Top, false) => self.draw_top_idle(out),
             (Screen::Bottom, false) if ds => {}
-            (Screen::Bottom, false) if matches!(self.phase, Phase::Playing { .. }) => self.draw_bottom_slot(out),
+            (Screen::Bottom, false) if matches!(self.phase, Phase::Playing { .. }) => {}
             (Screen::Bottom, false) => {
                 let from = out.len();
                 single(out);
@@ -7153,6 +7306,12 @@ impl App {
         self.draw_status_footer(out);
     }
 
+    fn ds_parted(&self) -> Option<f32> {
+        let at = self.ds_landed?;
+        let k = ((self.clock - at) / 1000.0) as f32 / DS_PART_S;
+        (k < 1.0).then(|| 1.0 - ease(k.max(0.0)))
+    }
+
     fn draw_ds_fling_bottom(&self, out: &mut Vec<Draw>) {
         let canvas = self.canvas();
         self.draw_background(out);
@@ -7160,7 +7319,11 @@ impl App {
             return;
         };
         let seat = self.seat();
-        self.shelf().draw_row(canvas, Some(stem), 0.0, seat, 1.0, out);
+        let part = match self.ds_inserting() {
+            true => ease((seat * DS_INSERT_FLY_S / DS_PART_S).clamp(0.0, 1.0)),
+            false => 1.0,
+        };
+        self.shelf().draw_row_parted(canvas, Some(stem), part, out);
         let placed = match self.ds_inserting() {
             true => ds_insert_bottom(seat),
             false => ds_eject_bottom(1.0 - seat),
@@ -7180,16 +7343,41 @@ impl App {
         self.draw_status_footer(out);
     }
 
-    fn draw_moving_cart(&self, stem: &str, face: Option<TexId>, rect: [f32; 4], out: &mut Vec<Draw>) {
+    fn draw_moving_cart(
+        &self,
+        stem: &str,
+        face: Option<TexId>,
+        rect: [f32; 4],
+        out: &mut Vec<Draw>,
+    ) {
         let [x, y, w, h] = rect;
         for tex in self.shelf().behind(stem).into_iter().flatten() {
-            out.push(Draw::Tex { x, y, w, h, tex, alpha: 1.0 });
+            out.push(Draw::Tex {
+                x,
+                y,
+                w,
+                h,
+                tex,
+                alpha: 1.0,
+            });
         }
         match face {
-            Some(tex) => out.push(Draw::Tex { x, y, w, h, tex, alpha: 1.0 }),
+            Some(tex) => out.push(Draw::Tex {
+                x,
+                y,
+                w,
+                h,
+                tex,
+                alpha: 1.0,
+            }),
             None => {
                 let c = slot_ui::label_colour(&slot_ui::clean_label(stem));
-                let colour = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
+                let colour = [
+                    c[0] as f32 / 255.0,
+                    c[1] as f32 / 255.0,
+                    c[2] as f32 / 255.0,
+                    1.0,
+                ];
                 out.push(Draw::Rect { x, y, w, h, colour });
             }
         }
@@ -7198,8 +7386,7 @@ impl App {
     fn draw_status_footer(&self, out: &mut Vec<Draw>) {
         draw_footer(
             self.canvas(),
-            self.battery,
-            self.battery_percent,
+            self.gauge(),
             self.bolt,
             self.shelf_clock,
             footer_ink(self.light()),
@@ -7212,8 +7399,7 @@ impl App {
         draw_empty_slot(self.canvas(), self.top_slot_faces(), out);
         draw_footer(
             self.canvas(),
-            self.battery,
-            self.battery_percent,
+            self.gauge(),
             self.bolt,
             self.shelf_clock,
             footer_ink(self.light()),
@@ -7221,21 +7407,18 @@ impl App {
         );
     }
 
-    fn draw_bottom_slot(&self, out: &mut Vec<Draw>) {
-        let Phase::Playing { cart } = &self.phase else {
+    fn sync_bottom_backlight(&mut self) {
+        if !self.two_panels {
             return;
-        };
-        self.draw_background(out);
-        self.draw_seated_mouth(cart, out);
-        draw_footer(
-            self.canvas(),
-            self.battery,
-            self.battery_percent,
-            self.bolt,
-            self.shelf_clock,
-            footer_ink(self.light()),
-            out,
-        );
+        }
+        let lit = self.bottom_source() != BottomSource::Black;
+        if self.bottom_lit == Some(lit) {
+            return;
+        }
+        self.bottom_lit = Some(lit);
+        if let Some(power) = &mut self.power {
+            power.set_bottom_backlight(lit);
+        }
     }
 
     pub fn bottom_source(&self) -> BottomSource {
@@ -7248,13 +7431,17 @@ impl App {
         if self.ds_seated() && !self.ds_flying() && !self.ds_powering_on() {
             return BottomSource::DsScreen;
         }
+        if matches!(self.phase, Phase::Playing { .. }) && !self.ds_seated() {
+            return BottomSource::Black;
+        }
         BottomSource::Compositor
     }
 
     fn ds_seated(&self) -> bool {
         #[cfg(feature = "nds")]
         {
-            self.seated_cart().is_some_and(|c| c.platform == Platform::Nds)
+            self.seated_cart()
+                .is_some_and(|c| c.platform == Platform::Nds)
         }
         #[cfg(not(feature = "nds"))]
         {
@@ -7277,7 +7464,8 @@ impl App {
                 | Phase::Polaroids { .. }
                 | Phase::SetClock { .. }
         );
-        let in_game = matches!(self.phase, Phase::Playing { .. }) && self.in_game_menu_shown().is_some();
+        let in_game =
+            matches!(self.phase, Phase::Playing { .. }) && self.in_game_menu_shown().is_some();
         menu_phase
             || in_game
             || self.game_menu.is_some()
@@ -7301,25 +7489,12 @@ impl App {
         self.box_art.as_ref()
     }
 
-    pub fn box_text(&self) -> Option<(String, String)> {
-        if !self.two_panels {
-            return None;
-        }
-        let cart = self.seated_cart()?;
-        Some((slot_ui::label_text(cart), cart.platform.name().to_string()))
-    }
-
-    pub fn set_box_text_faces(&mut self, title: slot_ui::Printed, system: slot_ui::Printed) {
-        self.box_title = title;
-        self.box_system = system;
-    }
-
     pub fn top_previews_game(&self) -> bool {
         !self.ds_seated()
             && matches!(self.phase, Phase::Playing { .. })
-            && self
-                .in_game_menu_shown()
-                .is_some_and(|r| r == QuickRow::PlayScreen || r.page() == &QuickRow::PLAY_SCREEN[..])
+            && self.in_game_menu_shown().is_some_and(|r| {
+                r == QuickRow::PlayScreen || r.page() == &QuickRow::PLAY_SCREEN[..]
+            })
     }
 
     fn draw_top_under_menu(&self, out: &mut Vec<Draw>) {
@@ -7327,18 +7502,22 @@ impl App {
             self.push_game(out);
             return;
         }
-        self.draw_background(out);
+        let over_game = matches!(self.phase, Phase::Playing { .. }) && self.game_visible();
+        match over_game {
+            true => out.push(Draw::Game),
+            false => self.draw_background(out),
+        }
         #[cfg(feature = "nds")]
         {
             let art = self.box_art.as_ref().filter(|a| {
-                self.seated_cart().is_some_and(|c| c.stem == a.stem && c.platform == a.platform)
+                self.seated_cart()
+                    .is_some_and(|c| c.stem == a.stem && c.platform == a.platform)
             });
             slot_ui::BoxScreen {
                 canvas: self.canvas(),
                 boxed: art.and_then(|a| a.boxed),
                 logo: art.and_then(|a| a.logo),
-                title: self.box_title,
-                system: self.box_system,
+                over_game,
             }
             .draw(out);
         }
@@ -7348,8 +7527,7 @@ impl App {
         }
         draw_footer(
             self.canvas(),
-            self.battery,
-            self.battery_percent,
+            self.gauge(),
             self.bolt,
             self.shelf_clock,
             footer_ink(self.light()),
@@ -7440,33 +7618,45 @@ impl App {
                 return;
             }
             Phase::QuickMenu { .. } if self.keyboard.is_some() => self.draw_networks(out),
-            Phase::QuickMenu { row } => QuickMenu {
-                row: *row,
-                hidden: &self.hidden_rows(),
-                bound: Some(&self.bound_faces()),
-                description: self.description(*row),
-                values: QuickRow::ALL.map(|r| self.quick_value(r)),
-                clock: self.quick_clock_faces,
-                wallpaper: self.quick_wallpaper_faces,
-                networks: self.quick_network_faces,
-                romm: self.quick_romm_faces,
-                kid_shelf: self.quick_kid_shelf_faces,
-                faces: self.quick_menu_faces.as_ref(),
-                ground: self.menu_ground(),
-                palette: self.quick_palette_faces,
-                gba_bezel: self.quick_bezel_faces[bezel_slot(Platform::Gba)],
-                gb_bezel: self.quick_bezel_faces[bezel_slot(Platform::Gb)],
-                gbc_bezel: self.quick_bezel_faces[bezel_slot(Platform::Gbc)],
-                bezel: None,
-                gba_overlay: self.quick_overlay_faces[overlay_slot(Platform::Gba)],
-                gb_overlay: self.quick_overlay_faces[overlay_slot(Platform::Gb)],
-                gbc_overlay: self.quick_overlay_faces[overlay_slot(Platform::Gbc)],
-                overlay: None,
-                over_game: false,
-                footer_top: self.canvas().h,
-                canvas: self.canvas(),
+            Phase::QuickMenu { row } => {
+                QuickMenu {
+                    row: *row,
+                    hidden: &self.hidden_rows(),
+                    bound: Some(&self.bound_faces()),
+                    description: self.description(*row),
+                    values: QuickRow::ALL.map(|r| self.quick_value(r)),
+                    clock: self.quick_clock_faces,
+                    wallpaper: self.quick_wallpaper_faces,
+                    networks: self.quick_network_faces,
+                    romm: self.quick_romm_faces,
+                    kid_shelf: self.quick_kid_shelf_faces,
+                    faces: self.quick_menu_faces.as_ref(),
+                    ground: self.menu_ground(),
+                    palette: self.quick_palette_faces,
+                    gba_bezel: self.quick_bezel_faces[bezel_slot(Platform::Gba)],
+                    gb_bezel: self.quick_bezel_faces[bezel_slot(Platform::Gb)],
+                    gbc_bezel: self.quick_bezel_faces[bezel_slot(Platform::Gbc)],
+                    bezel: None,
+                    gba_overlay: self.quick_overlay_faces[overlay_slot(Platform::Gba)],
+                    gb_overlay: self.quick_overlay_faces[overlay_slot(Platform::Gb)],
+                    gbc_overlay: self.quick_overlay_faces[overlay_slot(Platform::Gbc)],
+                    overlay: None,
+                    over_game: false,
+                    footer_top: self.canvas().h,
+                    canvas: self.canvas(),
+                }
+                .draw(out);
+                if !self.two_panels {
+                    slot_ui::draw_corners(
+                        self.canvas(),
+                        self.gauge(),
+                        self.hud_bolt,
+                        self.shelf_clock,
+                        out,
+                    );
+                }
+                self.draw_tint_peek(out);
             }
-            .draw(out),
             Phase::Shelf if self.keyboard.is_some() => self.draw_networks(out),
             Phase::Shelf | Phase::Unwrap { .. } => {
                 self.draw_background(out);
@@ -7487,11 +7677,17 @@ impl App {
                     _ => {
                         if self.edit.is_some() {
                             self.draw_picking(out);
-                        } else if self.draw_leaving(out) {
-                        } else if self.draw_pressing(out) {
+                        } else if self.draw_leaving(out) || self.draw_pressing(out) {
+                        } else if let Some(part) = self.ds_parted() {
+                            self.shelf().draw_row_parted(self.canvas(), None, part, out);
+                            draw_empty_slot(self.canvas(), self.slot_faces, out);
                         } else if !self.draw_unwrap(out) {
-                            self.shelf()
-                                .draw(self.canvas(), self.shelf_shake(), self.slot_faces, out);
+                            self.shelf().draw(
+                                self.canvas(),
+                                self.shelf_shake(),
+                                self.slot_faces,
+                                out,
+                            );
                         }
                         let name_alpha = match &self.edit {
                             None | Some(crate::editing::Edit::Selecting { .. }) => {
@@ -7520,15 +7716,14 @@ impl App {
                 } else {
                     draw_footer(
                         self.canvas(),
-                        self.battery,
-                        self.battery_percent,
+                        self.gauge(),
                         self.bolt,
                         self.shelf_clock,
                         footer_ink(self.light()),
                         out,
                     );
                     if self.wifi_up() {
-                        slot_ui::draw_wifi_icon(self.canvas(), self.battery_percent, self.wifi_face(), out);
+                        slot_ui::draw_wifi_icon(self.canvas(), self.gauge(), self.wifi_face(), out);
                     }
                     self.draw_kid_icon(out);
                 }
@@ -7603,8 +7798,7 @@ impl App {
                 if let Some((g, _)) = &self.guide {
                     g.draw(
                         self.canvas(),
-                        self.battery,
-                        self.battery_percent,
+                        self.gauge(),
                         self.hud_bolt,
                         self.shelf_clock,
                         out,
@@ -7615,8 +7809,7 @@ impl App {
                 if let Some(v) = &self.shot_viewer {
                     v.draw(
                         self.canvas(),
-                        self.battery,
-                        self.battery_percent,
+                        self.gauge(),
                         self.hud_bolt,
                         self.shelf_clock,
                         out,
@@ -7630,8 +7823,7 @@ impl App {
                     self.draw_sp_strip(out);
                     p.draw_chrome(
                         self.canvas(),
-                        self.battery,
-                        self.battery_percent,
+                        self.gauge(),
                         self.hud_bolt,
                         self.shelf_clock,
                         out,
@@ -7688,11 +7880,10 @@ impl App {
                 canvas: self.canvas(),
             }
             .draw(out);
-            if row.page() != QuickRow::PLAY_SCREEN {
+            if row.page() != QuickRow::PLAY_SCREEN && !self.two_panels {
                 slot_ui::draw_corners(
                     self.canvas(),
-                    self.battery,
-                    self.battery_percent,
+                    self.gauge(),
                     self.hud_bolt,
                     self.shelf_clock,
                     out,
@@ -7795,15 +7986,14 @@ impl App {
         }
         draw_footer(
             self.canvas(),
-            self.battery,
-            self.battery_percent,
+            self.gauge(),
             self.bolt,
             self.shelf_clock,
             footer_ink(self.light()),
             out,
         );
         if self.wifi_up() {
-            slot_ui::draw_wifi_icon(self.canvas(), self.battery_percent, self.wifi_face(), out);
+            slot_ui::draw_wifi_icon(self.canvas(), self.gauge(), self.wifi_face(), out);
         }
         self.draw_kid_icon(out);
         shift_down(&mut out[start..], self.menu_footer_offset());
@@ -7981,8 +8171,16 @@ impl App {
                 multi,
                 ..
             } => {
-                let slide = crate::editing::ease_in(crate::editing::progress(now, *since, crate::editing::ENTER_SLIDE_MS));
-                let move_ = crate::editing::ease_in_out(crate::editing::progress(now, *since, crate::editing::ENTER_MOVE_MS));
+                let slide = crate::editing::ease_in(crate::editing::progress(
+                    now,
+                    *since,
+                    crate::editing::ENTER_SLIDE_MS,
+                ));
+                let move_ = crate::editing::ease_in_out(crate::editing::progress(
+                    now,
+                    *since,
+                    crate::editing::ENTER_MOVE_MS,
+                ));
                 let fade = self.edit_fade();
                 if move_ < 1.0 {
                     let hidden = match (multi, games.first()) {
@@ -7993,24 +8191,37 @@ impl App {
                 }
                 self.draw_dim_at(move_, out);
                 let target = self.draw_choices(choices, *at, fade, out);
-                let carousel = crate::editing::layout(choices.len()) == crate::editing::Layout::Carousel;
+                let carousel =
+                    crate::editing::layout(choices.len()) == crate::editing::Layout::Carousel;
                 let picked_x = match self.glide {
                     Some((from, t)) if !carousel => {
-                        from + (target - from) * crate::editing::ease_out(crate::editing::progress(now, t, GLIDE_MS))
+                        from + (target - from)
+                            * crate::editing::ease_out(crate::editing::progress(now, t, GLIDE_MS))
                     }
                     _ => target,
                 };
                 match (games.as_slice(), multi) {
                     ([one], false) => {
-                        let float = self.float_rect(one, picked_x, ADD_FLOAT_TOP + self.canvas().inset_y(), ADD_FLOAT);
+                        let float = self.float_rect(
+                            one,
+                            picked_x,
+                            ADD_FLOAT_TOP + self.canvas().inset_y(),
+                            ADD_FLOAT,
+                        );
                         let rect = Self::lerp_rect(self.home_rect(one), float, move_);
                         self.draw_game_at(one, rect, 1.0, 0.0, out);
                     }
                     _ => self.draw_bundle_at(games, picked_x, out),
                 }
             }
-            Edit::Removing { last: true, since, .. } => {
-                let e = crate::editing::ease_in_out(crate::editing::progress(now, *since, crate::editing::ENTER_MOVE_MS));
+            Edit::Removing {
+                last: true, since, ..
+            } => {
+                let e = crate::editing::ease_in_out(crate::editing::progress(
+                    now,
+                    *since,
+                    crate::editing::ENTER_MOVE_MS,
+                ));
                 self.draw_dim_at(e, out);
                 let shelf = self.shelf();
                 let Some(cart) = shelf.carts.get(shelf.index) else {
@@ -8024,19 +8235,52 @@ impl App {
                 shelf.draw_cart_at(shelf.index, [canvas.w / 2.0 - w / 2.0, y, w, h], out);
             }
             Edit::Removing { game, since, .. } => {
-                let slide = crate::editing::ease_in(crate::editing::progress(now, *since, crate::editing::ENTER_SLIDE_MS));
-                let move_ = crate::editing::ease_in_out(crate::editing::progress(now, *since, crate::editing::ENTER_MOVE_MS));
+                let slide = crate::editing::ease_in(crate::editing::progress(
+                    now,
+                    *since,
+                    crate::editing::ENTER_SLIDE_MS,
+                ));
+                let move_ = crate::editing::ease_in_out(crate::editing::progress(
+                    now,
+                    *since,
+                    crate::editing::ENTER_MOVE_MS,
+                ));
                 let fade = self.edit_fade();
                 if move_ < 1.0 {
-                    self.draw_parted(Some(game.stem.as_str()), slide * PART_PUSH, 1.0 - slide, out);
+                    self.draw_parted(
+                        Some(game.stem.as_str()),
+                        slide * PART_PUSH,
+                        1.0 - slide,
+                        out,
+                    );
                 }
                 self.draw_dim_at(move_, out);
                 let shelf_at = self.shelf_at;
-                let around = crate::editing::remove_stack(&self.shelf_games(shelf_at), self.shelf().index);
+                let around =
+                    crate::editing::remove_stack(&self.shelf_games(shelf_at), self.shelf().index);
                 let rise = (1.0 - fade) * ENTER_RISE;
-                self.draw_stack(&around, canvas.w / 2.0, REMOVE_BASE + rise, STACK_PICKED, fade, 0.0, out);
-                let float = self.float_rect(game, canvas.w / 2.0, REMOVE_FLOAT_TOP + self.canvas().inset_y(), REMOVE_FLOAT);
-                self.draw_game_at(game, Self::lerp_rect(self.home_rect(game), float, move_), 1.0, 0.0, out);
+                self.draw_stack(
+                    &around,
+                    canvas.w / 2.0,
+                    REMOVE_BASE + rise,
+                    STACK_PICKED,
+                    fade,
+                    0.0,
+                    out,
+                );
+                let float = self.float_rect(
+                    game,
+                    canvas.w / 2.0,
+                    REMOVE_FLOAT_TOP + self.canvas().inset_y(),
+                    REMOVE_FLOAT,
+                );
+                self.draw_game_at(
+                    game,
+                    Self::lerp_rect(self.home_rect(game), float, move_),
+                    1.0,
+                    0.0,
+                    out,
+                );
             }
             Edit::MovingGame { hold, .. } => {
                 let shelf = self.shelf();
@@ -8060,7 +8304,11 @@ impl App {
                 shelf.draw_row_turned(canvas, None, 1.0, &turn, &shift, out);
             }
             Edit::MovingCollection { row, at, since, .. } => {
-                let gather = crate::editing::ease_in_out(crate::editing::progress(now, *since, crate::editing::GATHER_MS));
+                let gather = crate::editing::ease_in_out(crate::editing::progress(
+                    now,
+                    *since,
+                    crate::editing::GATHER_MS,
+                ));
                 if gather < 1.0 {
                     self.draw_parted(None, 0.0, 1.0 - gather, out);
                 }
@@ -8106,9 +8354,24 @@ impl App {
                             )
                         }
                     };
-                    self.draw_stack(&games, cx, (ROW_BASE + self.canvas().inset_y()) + lift, scale, alpha * gather, 0.0, out);
+                    self.draw_stack(
+                        &games,
+                        cx,
+                        (ROW_BASE + self.canvas().inset_y()) + lift,
+                        scale,
+                        alpha * gather,
+                        0.0,
+                        out,
+                    );
                     if off != 0 {
-                        self.draw_name(name, false, cx, ROW_NAME_Y + self.canvas().inset_y(), gather, out);
+                        self.draw_name(
+                            name,
+                            false,
+                            cx,
+                            ROW_NAME_Y + self.canvas().inset_y(),
+                            gather,
+                            out,
+                        );
                     }
                 }
             }
@@ -8128,7 +8391,10 @@ impl App {
             return false;
         };
         let t = self.now().saturating_sub(since);
-        if t < crate::editing::JIGGLE_DELAY_MS || self.core_picker.is_some() || self.studio.is_some() {
+        if t < crate::editing::JIGGLE_DELAY_MS
+            || self.core_picker.is_some()
+            || self.studio.is_some()
+        {
             return false;
         }
         let shelf = self.shelf();
@@ -8137,14 +8403,25 @@ impl App {
         };
         let canvas = self.canvas();
         let dim = crate::editing::neighbor_dim(t);
-        shelf.draw_row(canvas, Some(cart.stem.as_str()), self.shelf_shake(), 0.0, dim, out);
+        shelf.draw_row(
+            canvas,
+            Some(cart.stem.as_str()),
+            self.shelf_shake(),
+            0.0,
+            dim,
+            out,
+        );
         let (x, scale) = shelf.selected_at(canvas);
         let (cw, ch) = slot_ui::cart_box(cart.platform);
         let (w, h) = (cw as f32 * scale, ch as f32 * scale);
         let rect = [x, slot_ui::foot_y(self.canvas(), ch as f32) - h, w, h];
         let start = out.len();
         shelf.draw_cart_at(shelf.index, rect, out);
-        slot_ui::turn_about(&mut out[start..], [x + w / 2.0, rect[1] + h / 2.0], crate::editing::hold_jiggle(t));
+        slot_ui::turn_about(
+            &mut out[start..],
+            [x + w / 2.0, rect[1] + h / 2.0],
+            crate::editing::hold_jiggle(t),
+        );
         draw_empty_slot(canvas, self.slot_faces, out);
         true
     }
@@ -8170,13 +8447,18 @@ impl App {
             }
             _ => return 1.0,
         };
-        ease_out(progress(self.now(), since + ENTER_MOVE_MS - 40, ENTER_FADE_MS))
+        ease_out(progress(
+            self.now(),
+            since + ENTER_MOVE_MS - 40,
+            ENTER_FADE_MS,
+        ))
     }
 
     fn move_pass(&self, now: Millis) -> (f32, i32) {
         use crate::editing::Edit;
         let (hold, done) = match &self.edit {
-            Some(Edit::MovingCollection { hold, done, .. }) | Some(Edit::MovingGame { hold, done, .. }) => (hold, *done),
+            Some(Edit::MovingCollection { hold, done, .. })
+            | Some(Edit::MovingGame { hold, done, .. }) => (hold, *done),
             _ => return (0.0, 0),
         };
         let Some(h) = hold else {
@@ -8206,7 +8488,11 @@ impl App {
             Some(up) => {
                 let from = trail(crate::editing::travel(h, up, 10_000));
                 let to = start + dir * crate::editing::travel(h, up + 60_000, 10_000);
-                let settle = crate::editing::ease_in_out(crate::editing::progress(now, up, crate::editing::CAMERA_MS));
+                let settle = crate::editing::ease_in_out(crate::editing::progress(
+                    now,
+                    up,
+                    crate::editing::CAMERA_MS,
+                ));
                 from + (to - from) * settle
             }
         };
@@ -8226,10 +8512,19 @@ impl App {
     }
 
     fn stack_of(&self, i: usize) -> Vec<Recent> {
-        crate::editing::stack_games(&self.collections[i], &self.shelf_games(self.collection_at(i)))
+        crate::editing::stack_games(
+            &self.collections[i],
+            &self.shelf_games(self.collection_at(i)),
+        )
     }
 
-    fn choice_x(&self, layout: crate::editing::Layout, k: usize, at: usize, n: usize) -> Option<f32> {
+    fn choice_x(
+        &self,
+        layout: crate::editing::Layout,
+        k: usize,
+        at: usize,
+        n: usize,
+    ) -> Option<f32> {
         use crate::editing::Layout;
         let mid = self.canvas().w / 2.0;
         let off = match layout {
@@ -8279,7 +8574,13 @@ impl App {
         let mid = self.canvas().w / 2.0;
         let slide = match (layout, self.glide) {
             (Layout::Carousel, Some((from, t))) => {
-                (from - mid) * (1.0 - crate::editing::ease_out(crate::editing::progress(self.now(), t, GLIDE_MS)))
+                (from - mid)
+                    * (1.0
+                        - crate::editing::ease_out(crate::editing::progress(
+                            self.now(),
+                            t,
+                            GLIDE_MS,
+                        )))
             }
             _ => 0.0,
         };
@@ -8305,11 +8606,25 @@ impl App {
                             Some((k, before)) if k == i => before.clone(),
                             _ => self.stack_of(*i),
                         };
-                        self.draw_stack(&stack, cx, (STACK_BASE + self.canvas().inset_y()) + rise, scale, alpha * fade, 0.0, out);
+                        self.draw_stack(
+                            &stack,
+                            cx,
+                            (STACK_BASE + self.canvas().inset_y()) + rise,
+                            scale,
+                            alpha * fade,
+                            0.0,
+                            out,
+                        );
                     }
                     Choice::New => {
                         let solid = fresh.map_or(1.0, |(_, a)| a);
-                        self.draw_new_stack(cx, (STACK_BASE + self.canvas().inset_y()) + rise, scale, alpha * fade * solid, out)
+                        self.draw_new_stack(
+                            cx,
+                            (STACK_BASE + self.canvas().inset_y()) + rise,
+                            scale,
+                            alpha * fade * solid,
+                            out,
+                        )
                     }
                 }
                 let y = match picked {
@@ -8338,19 +8653,34 @@ impl App {
     fn home_rect(&self, g: &Recent) -> [f32; 4] {
         let (cw, ch) = slot_ui::cart_box(g.platform);
         let (w, h) = (cw as f32, ch as f32);
-        [self.canvas().w / 2.0 - w / 2.0, slot_ui::foot_y(self.canvas(), h) - h, w, h]
+        [
+            self.canvas().w / 2.0 - w / 2.0,
+            slot_ui::foot_y(self.canvas(), h) - h,
+            w,
+            h,
+        ]
     }
 
     fn fresh_rect(&self, g: &Recent, cx: f32) -> [f32; 4] {
         let (cw, ch) = slot_ui::cart_box(g.platform);
         let (w, h) = (cw as f32 * STACK_PICKED, ch as f32 * STACK_PICKED);
-        [cx - w / 2.0, (STACK_BASE + self.canvas().inset_y()) - (NEW_H + h) / 2.0, w, h]
+        [
+            cx - w / 2.0,
+            (STACK_BASE + self.canvas().inset_y()) - (NEW_H + h) / 2.0,
+            w,
+            h,
+        ]
     }
 
     fn front_rect(&self, g: &Recent, cx: f32) -> [f32; 4] {
         let (cw, ch) = slot_ui::cart_box(g.platform);
         let (w, h) = (cw as f32 * STACK_PICKED, ch as f32 * STACK_PICKED);
-        [cx + STACK_SPREAD - w / 2.0, (STACK_BASE + self.canvas().inset_y()) - h, w, h]
+        [
+            cx + STACK_SPREAD - w / 2.0,
+            (STACK_BASE + self.canvas().inset_y()) - h,
+            w,
+            h,
+        ]
     }
 
     fn draw_game_at(&self, g: &Recent, rect: [f32; 4], alpha: f32, turn: f32, out: &mut Vec<Draw>) {
@@ -8359,7 +8689,11 @@ impl App {
         };
         let start = out.len();
         self.shelves[at].1.draw_cart_faded(i, rect, alpha, out);
-        slot_ui::turn_about(&mut out[start..], [rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0], turn);
+        slot_ui::turn_about(
+            &mut out[start..],
+            [rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0],
+            turn,
+        );
     }
 
     fn draw_parted(&self, hidden: Option<&str>, push: f32, alpha: f32, out: &mut Vec<Draw>) {
@@ -8373,7 +8707,10 @@ impl App {
         for draw in &mut out[start..] {
             let dx = |x: f32, w: f32| if x + w / 2.0 < mid { -push } else { push };
             match draw {
-                Draw::Rect { x, w, .. } | Draw::Tex { x, w, .. } | Draw::Part { x, w, .. } | Draw::Turned { x, w, .. } => {
+                Draw::Rect { x, w, .. }
+                | Draw::Tex { x, w, .. }
+                | Draw::Part { x, w, .. }
+                | Draw::Turned { x, w, .. } => {
                     *x += dx(*x, *w);
                 }
                 Draw::Quad { corners, .. } => {
@@ -8392,7 +8729,13 @@ impl App {
         [0, 1, 2, 3].map(|k| a[k] + (b[k] - a[k]) * t)
     }
 
-    fn stack_rects(&self, games: &[Recent], cx: f32, base: f32, scale: f32) -> Vec<([f32; 4], f32)> {
+    fn stack_rects(
+        &self,
+        games: &[Recent],
+        cx: f32,
+        base: f32,
+        scale: f32,
+    ) -> Vec<([f32; 4], f32)> {
         let s = scale / STACK_PICKED;
         let fan = [(-1.0, -STACK_TILT), (0.0, 0.0), (1.0, STACK_TILT)];
         games
@@ -8436,13 +8779,20 @@ impl App {
         let (cw, ch) = slot_ui::cart_box(g.platform);
         let (w, h) = (cw as f32 * SIDE_SCALE, ch as f32 * SIDE_SCALE);
         let cx = self.canvas().w / 2.0 + side * SIDE_PITCH;
-        [cx - w / 2.0, slot_ui::foot_y(self.canvas(), ch as f32) - h, w, h]
+        [
+            cx - w / 2.0,
+            slot_ui::foot_y(self.canvas(), ch as f32) - h,
+            w,
+            h,
+        ]
     }
 
     fn leaving_ms(l: &Leaving) -> Millis {
         use crate::editing::*;
         match l {
-            Leaving::Added { .. } => KEYS_OUT_MS + ADD_SLOT_MS + ADD_PAUSE_MS + HOME_MS + NEIGHBORS_IN_MS,
+            Leaving::Added { .. } => {
+                KEYS_OUT_MS + ADD_SLOT_MS + ADD_PAUSE_MS + HOME_MS + NEIGHBORS_IN_MS
+            }
             Leaving::Backed { .. } => BACK_HOME_MS + NEIGHBORS_IN_MS,
             Leaving::Removed { .. } => REMOVE_RISE_MS + FAN_MS,
             Leaving::Kept { .. } => FAN_MS,
@@ -8466,7 +8816,9 @@ impl App {
     fn fresh_name(&self, snap: &crate::editing::Edit, i: usize) -> Option<&str> {
         match snap {
             crate::editing::Edit::Choosing { choices, at, .. } => match choices.get(*at) {
-                Some(crate::editing::Choice::New) => self.collections.get(i).map(|c| c.name.as_str()),
+                Some(crate::editing::Choice::New) => {
+                    self.collections.get(i).map(|c| c.name.as_str())
+                }
                 _ => None,
             },
             _ => None,
@@ -8515,7 +8867,12 @@ impl App {
                 };
                 let start = &(*start + lead);
                 let t = t.saturating_sub(lead);
-                let float = self.float_rect(game, *stack_x, ADD_FLOAT_TOP + self.canvas().inset_y(), ADD_FLOAT);
+                let float = self.float_rect(
+                    game,
+                    *stack_x,
+                    ADD_FLOAT_TOP + self.canvas().inset_y(),
+                    ADD_FLOAT,
+                );
                 let front = match fresh {
                     Some(_) => self.fresh_rect(game, *stack_x),
                     None => self.front_rect(game, *stack_x),
@@ -8540,7 +8897,9 @@ impl App {
                                 }
                             }
                         }
-                        _ => self.draw_game_at(game, Self::lerp_rect(float, front, u), 1.0, 0.0, out),
+                        _ => {
+                            self.draw_game_at(game, Self::lerp_rect(float, front, u), 1.0, 0.0, out)
+                        }
                     }
                     if fresh.is_some() && now < *start {
                         let keys = 1.0 - ease_out(progress(now, *start - lead, lead));
@@ -8548,7 +8907,9 @@ impl App {
                         slot_ui::draw_menu_ground(self.canvas(), self.menu_ground(), out);
                         for d in &mut out[begin..] {
                             match d {
-                                Draw::Part { alpha, .. } | Draw::Tex { alpha, .. } => *alpha *= keys,
+                                Draw::Part { alpha, .. } | Draw::Tex { alpha, .. } => {
+                                    *alpha *= keys
+                                }
                                 Draw::Rect { colour, .. } => colour[3] *= keys,
                                 _ => {}
                             }
@@ -8566,24 +8927,50 @@ impl App {
                     self.draw_parted(None, (1.0 - n) * PART_PUSH, 1.0, out);
                 } else {
                     self.draw_neighbours_in(game, begin + HOME_MS - NEIGHBORS_LEAD_MS, out);
-                    self.draw_game_at(game, Self::lerp_rect(front, self.home_rect(game), c), 1.0, 0.0, out);
+                    self.draw_game_at(
+                        game,
+                        Self::lerp_rect(front, self.home_rect(game), c),
+                        1.0,
+                        0.0,
+                        out,
+                    );
                 }
             }
-            Leaving::Backed { snap, game, float_x } => {
+            Leaving::Backed {
+                snap,
+                game,
+                float_x,
+            } => {
                 let o = ease_out(progress(now, *start, OUT_MS));
                 let c = ease_in_out(progress(now, *start, BACK_HOME_MS));
                 self.draw_dim_at(1.0 - c, out);
                 self.draw_snap(snap, 1.0 - o, None, None, out);
                 self.draw_neighbours_in(game, *start + BACK_HOME_MS - NEIGHBORS_LEAD_MS, out);
-                let float = self.float_rect(game, *float_x, ADD_FLOAT_TOP + self.canvas().inset_y(), ADD_FLOAT);
-                self.draw_game_at(game, Self::lerp_rect(float, self.home_rect(game), c), 1.0, 0.0, out);
+                let float = self.float_rect(
+                    game,
+                    *float_x,
+                    ADD_FLOAT_TOP + self.canvas().inset_y(),
+                    ADD_FLOAT,
+                );
+                self.draw_game_at(
+                    game,
+                    Self::lerp_rect(float, self.home_rect(game), c),
+                    1.0,
+                    0.0,
+                    out,
+                );
             }
             Leaving::Removed { game, around } => {
                 let g = progress(now, *start, REMOVE_RISE_MS);
                 let f = ease_in_out(progress(now, *start + REMOVE_RISE_MS - 40, FAN_MS));
                 self.draw_dim_at(1.0 - f, out);
                 self.draw_fan(around, mid, REMOVE_BASE, f, &[0.0, -1.0, 1.0], out);
-                let mut float = self.float_rect(game, mid, REMOVE_FLOAT_TOP + self.canvas().inset_y(), REMOVE_FLOAT);
+                let mut float = self.float_rect(
+                    game,
+                    mid,
+                    REMOVE_FLOAT_TOP + self.canvas().inset_y(),
+                    REMOVE_FLOAT,
+                );
                 float[1] -= 150.0 * g * g;
                 self.draw_game_at(game, float, 1.0 - ease_out(g), 0.0, out);
             }
@@ -8595,9 +8982,19 @@ impl App {
                 let from = match last {
                     true => {
                         let (w, h) = (home[2] * LAST_SCALE, home[3] * LAST_SCALE);
-                        [mid - w / 2.0, home[1] + (home[3] - h) / 2.0 + LAST_DROP, w, h]
+                        [
+                            mid - w / 2.0,
+                            home[1] + (home[3] - h) / 2.0 + LAST_DROP,
+                            w,
+                            h,
+                        ]
                     }
-                    false => self.float_rect(game, mid, REMOVE_FLOAT_TOP + self.canvas().inset_y(), REMOVE_FLOAT),
+                    false => self.float_rect(
+                        game,
+                        mid,
+                        REMOVE_FLOAT_TOP + self.canvas().inset_y(),
+                        REMOVE_FLOAT,
+                    ),
                 };
                 self.draw_game_at(game, Self::lerp_rect(from, home, c), 1.0, 0.0, out);
             }
@@ -8625,11 +9022,23 @@ impl App {
         if now < from {
             return;
         }
-        let n = crate::editing::ease_out(crate::editing::progress(now, from, crate::editing::NEIGHBORS_IN_MS));
+        let n = crate::editing::ease_out(crate::editing::progress(
+            now,
+            from,
+            crate::editing::NEIGHBORS_IN_MS,
+        ));
         self.draw_parted(Some(game.stem.as_str()), (1.0 - n) * PART_PUSH, 1.0, out);
     }
 
-    fn draw_fan(&self, around: &[Recent], cx: f32, base: f32, f: f32, sides: &[f32], out: &mut Vec<Draw>) {
+    fn draw_fan(
+        &self,
+        around: &[Recent],
+        cx: f32,
+        base: f32,
+        f: f32,
+        sides: &[f32],
+        out: &mut Vec<Draw>,
+    ) {
         let rects = self.stack_rects(around, cx, base, STACK_PICKED);
         for (k, (g, (rect, tilt))) in around.iter().zip(rects).enumerate().rev() {
             let side = sides.get(k).copied().unwrap_or(f32::NAN);
@@ -8664,7 +9073,13 @@ impl App {
         while d < w {
             let len = dash.min(w - d);
             for yy in [y, y + h - t] {
-                out.push(Draw::Rect { x: x + d, y: yy, w: len, h: t, colour: ink });
+                out.push(Draw::Rect {
+                    x: x + d,
+                    y: yy,
+                    w: len,
+                    h: t,
+                    colour: ink,
+                });
             }
             d += dash + gap;
         }
@@ -8672,16 +9087,42 @@ impl App {
         while d < h {
             let len = dash.min(h - d);
             for xx in [x, x + w - t] {
-                out.push(Draw::Rect { x: xx, y: y + d, w: t, h: len, colour: ink });
+                out.push(Draw::Rect {
+                    x: xx,
+                    y: y + d,
+                    w: t,
+                    h: len,
+                    colour: ink,
+                });
             }
             d += dash + gap;
         }
         let arm = 22.0 * s;
-        out.push(Draw::Rect { x: cx - arm / 2.0, y: y + h / 2.0 - 2.0, w: arm, h: 4.0, colour: ink });
-        out.push(Draw::Rect { x: cx - 2.0, y: y + h / 2.0 - arm / 2.0, w: 4.0, h: arm, colour: ink });
+        out.push(Draw::Rect {
+            x: cx - arm / 2.0,
+            y: y + h / 2.0 - 2.0,
+            w: arm,
+            h: 4.0,
+            colour: ink,
+        });
+        out.push(Draw::Rect {
+            x: cx - 2.0,
+            y: y + h / 2.0 - arm / 2.0,
+            w: 4.0,
+            h: arm,
+            colour: ink,
+        });
     }
 
-    fn draw_name(&self, name: &str, picked: bool, cx: f32, y: f32, alpha: f32, out: &mut Vec<Draw>) {
+    fn draw_name(
+        &self,
+        name: &str,
+        picked: bool,
+        cx: f32,
+        y: f32,
+        alpha: f32,
+        out: &mut Vec<Draw>,
+    ) {
         let Some(&(_, faces)) = self.name_faces.iter().find(|(n, _)| n == name) else {
             return;
         };
@@ -8715,7 +9156,9 @@ impl App {
         match self.edit.as_ref()? {
             Edit::Selecting { .. } => None,
             Edit::Choosing { .. } => Some(("Add to which collection?".to_string(), false)),
-            Edit::Removing { collection, last, .. } => {
+            Edit::Removing {
+                collection, last, ..
+            } => {
                 let name = &self.collections[*collection].name;
                 Some(match last {
                     true => (format!("Remove last game from {name}?"), true),
@@ -8732,7 +9175,7 @@ impl App {
         self.heading_face = face;
     }
 
-    pub fn set_name_faces(&mut self, faces: Vec<(String, [(TexId, u32, u32); 2])>) {
+    pub fn set_name_faces(&mut self, faces: Vec<NameFace>) {
         self.name_faces = faces;
     }
 
@@ -8766,9 +9209,14 @@ impl App {
     }
 
     fn bundle_seats(&self) -> Vec<(usize, usize)> {
-        let mut games = self.edit.as_ref().map_or(Vec::new(), |e| self.edit_games(e));
+        let mut games = self
+            .edit
+            .as_ref()
+            .map_or(Vec::new(), |e| self.edit_games(e));
         match self.leaving.as_ref().map(|(l, _)| l) {
-            Some(Leaving::Added { snap, game, before, .. }) => {
+            Some(Leaving::Added {
+                snap, game, before, ..
+            }) => {
                 games.extend(self.edit_games(snap));
                 games.push(game.clone());
                 games.extend(before.1.iter().cloned());
@@ -8784,7 +9232,8 @@ impl App {
             Some(Leaving::LastRemoved { game }) => games.push(game.clone()),
             None => {}
         }
-        let mut seats: Vec<(usize, usize)> = games.iter().filter_map(|g| self.bundle_seat(g)).collect();
+        let mut seats: Vec<(usize, usize)> =
+            games.iter().filter_map(|g| self.bundle_seat(g)).collect();
         seats.sort();
         seats.dedup();
         seats
@@ -8794,7 +9243,11 @@ impl App {
         use crate::editing::{Choice, Edit};
         let mut games: Vec<Recent> = Vec::new();
         match edit {
-            Edit::Choosing { games: carried, choices, .. } => {
+            Edit::Choosing {
+                games: carried,
+                choices,
+                ..
+            } => {
                 games.extend(carried.iter().take(BUNDLE_MAX).cloned());
                 for c in choices {
                     if let Choice::Collection(i) = c {
@@ -8832,7 +9285,10 @@ impl App {
             true => BUNDLE_SCALE.min(room / tallest),
             false => BUNDLE_SCALE,
         };
-        (scale, (ADD_FLOAT_TOP + self.canvas().inset_y()) + tallest * scale)
+        (
+            scale,
+            (ADD_FLOAT_TOP + self.canvas().inset_y()) + tallest * scale,
+        )
     }
 
     fn draw_bundle_at(&self, checked: &[Recent], mid: f32, out: &mut Vec<Draw>) {
@@ -8923,7 +9379,6 @@ impl App {
     pub fn add_faces_count(&self) -> Option<usize> {
         self.add_faces.map(|(_, n)| n)
     }
-
 
     pub fn set_count_badge(&mut self, face: (TexId, u32, u32), n: usize) {
         self.count_badge = Some(((face.0, face.1 as f32, face.2 as f32), n));
@@ -9045,22 +9500,13 @@ impl App {
         self.core_chip_shadow_face = Some(shadow);
     }
 
-    pub fn set_core_gb_part_faces(
-        &mut self,
-        sockets: Vec<TexId>,
-        chips: Vec<TexId>,
-        blank: TexId,
-    ) {
+    pub fn set_core_gb_part_faces(&mut self, sockets: Vec<TexId>, chips: Vec<TexId>, blank: TexId) {
         self.core_gb_socket_faces = sockets;
         self.core_gb_chip_faces = chips;
         self.core_gb_blank_chip_face = Some(blank);
     }
 
-    pub fn set_core_legend_faces(
-        &mut self,
-        dark: Vec<(TexId, u32)>,
-        light: Vec<(TexId, u32)>,
-    ) {
+    pub fn set_core_legend_faces(&mut self, dark: Vec<(TexId, u32)>, light: Vec<(TexId, u32)>) {
         self.core_legend_faces = [dark, light];
     }
 
@@ -9486,7 +9932,7 @@ impl App {
             return;
         }
         if self.now().saturating_sub(at) >= PLAY_HOLD_MS && !self.unwrap_seated() {
-            self.insert(!self.kid_locked() || !self.state.auto_load.on_insert());
+            self.insert(!self.kid_locked() || !self.state.resume_insert);
         }
     }
 
@@ -9534,7 +9980,6 @@ impl App {
             }
         };
         let got = began.elapsed();
-        let state = state.filter(|_| self.state.eject_save);
         self.state_writer.flush();
         let flushed = began.elapsed();
         let (root, platform, core, stem, slot) = (
@@ -9568,14 +10013,20 @@ impl App {
             card_writes.wrote("eject", &written);
             written.is_ok()
         };
-        match std::thread::Builder::new().name("slot-eject".into()).spawn(write) {
+        match std::thread::Builder::new()
+            .name("slot-eject".into())
+            .spawn(write)
+        {
             Ok(h) => self.eject_write = Some(h),
             Err(e) => eprintln!("slot: eject: no writer thread: {e}"),
         }
     }
 
     fn take_eject_write(&mut self, wait: bool) {
-        let done = self.eject_write.as_ref().is_some_and(|h| wait || h.is_finished());
+        let done = self
+            .eject_write
+            .as_ref()
+            .is_some_and(|h| wait || h.is_finished());
         if !done {
             return;
         }
@@ -9719,7 +10170,8 @@ impl App {
     }
 
     fn core_faces_ready(&self) -> bool {
-        let (Some((platform, stem)), Some(cart)) = (&self.core_faces_for, self.selected_cart()) else {
+        let (Some((platform, stem)), Some(cart)) = (&self.core_faces_for, self.selected_cart())
+        else {
             return false;
         };
         cart.platform == *platform && cart.stem == *stem
@@ -9840,11 +10292,16 @@ impl App {
         let wifi = self.wifi_up();
         let shelf = self.shelf();
         let picked = shelf.carts.get(shelf.index).cloned();
-        if picked.as_ref().is_some_and(|c| self.studio_saving.as_deref() == Some(c.stem.as_str())) {
+        if picked
+            .as_ref()
+            .is_some_and(|c| self.studio_saving.as_deref() == Some(c.stem.as_str()))
+        {
             return;
         }
         let face = shelf.face(shelf.index);
-        let under = picked.as_ref().map_or([None; 2], |cart| shelf.behind(&cart.stem));
+        let under = picked
+            .as_ref()
+            .map_or([None; 2], |cart| shelf.behind(&cart.stem));
         if let Some(cart) = picked {
             self.studio_from = crate::studio_view::shelf_rect(self.canvas(), &cart);
             self.studio_shelf_face = face;
@@ -9928,10 +10385,10 @@ impl App {
             self.wifi_wanted_at = Some(now + WIFI_RETRY_MS);
         }
         if let Phase::QuickMenu { row } = self.phase {
-            if (row.page() == QuickRow::NETWORK || row.page() == QuickRow::ROMM) && self.update.is_none() && !self.wifi_up() {
+            if row.page() == QuickRow::ROMM && self.update.is_none() && !self.wifi_up() {
                 self.keyboard = None;
                 self.phase = Phase::QuickMenu {
-                    row: QuickRow::Network,
+                    row: QuickRow::Romm,
                 };
                 self.set_update(Some(UpdateState::Notice(NetNotice::NoNetwork)));
             }
@@ -9939,7 +10396,7 @@ impl App {
         if matches!(self.phase, Phase::RommPair) && self.update.is_none() && !self.wifi_up() {
             self.romm_jobs.ask(RommJob::CancelPair);
             self.phase = Phase::QuickMenu {
-                row: QuickRow::Network,
+                row: QuickRow::Romm,
             };
             self.set_update(Some(UpdateState::Notice(NetNotice::NoNetwork)));
         }
@@ -10219,10 +10676,15 @@ impl App {
         wanted
     }
 
-    pub fn set_studio_text(&mut self, key: (String, crate::studio_view::Style), face: (TexId, u32, u32)) {
+    pub fn set_studio_text(
+        &mut self,
+        key: (String, crate::studio_view::Style),
+        face: (TexId, u32, u32),
+    ) {
         if key.0.len() == 7 && key.0.starts_with('#') {
             if let Some(old) = self.studio_hex.replace(key.clone()) {
-                self.orphaned.extend(self.studio_text.remove(&old).map(|f| f.0));
+                self.orphaned
+                    .extend(self.studio_text.remove(&old).map(|f| f.0));
             }
         }
         self.studio_text.insert(key, face);
@@ -10249,7 +10711,12 @@ impl App {
             return [0.0; 4];
         };
         let l = crate::studio_view::layout(self.canvas().w, studio.cart.platform);
-        [l.cart_x, l.cart_y + self.canvas().inset_y(), l.cart_w, l.cart_h]
+        [
+            l.cart_x,
+            l.cart_y + self.canvas().inset_y(),
+            l.cart_w,
+            l.cart_h,
+        ]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10275,7 +10742,14 @@ impl App {
             Align::Center => x - w / 2.0,
             Align::Right => x - w + pad,
         };
-        out.push(Draw::Tex { x: x.floor(), y, w, h, tex, alpha });
+        out.push(Draw::Tex {
+            x: x.floor(),
+            y,
+            w,
+            h,
+            tex,
+            alpha,
+        });
     }
 
     fn draw_studio(&self, out: &mut Vec<Draw>) {
@@ -10287,9 +10761,14 @@ impl App {
         let since = self.studio_closing.unwrap_or(self.studio_opened);
         let t = (self.now().saturating_sub(since) as f32 / STUDIO_SLIDE_MS).min(1.0);
         if self.studio_closing.is_some() || t < 1.0 {
-            let e = if self.studio_closing.is_some() { 1.0 - ease(t) } else { ease(t) };
+            let e = if self.studio_closing.is_some() {
+                1.0 - ease(t)
+            } else {
+                ease(t)
+            };
             self.draw_background(out);
-            self.shelf().draw_row(canvas, Some(&studio.cart.stem), 0.0, 0.0, 1.0, out);
+            self.shelf()
+                .draw_row(canvas, Some(&studio.cart.stem), 0.0, 0.0, 1.0, out);
             self.draw_studio_ground((e - 1.0) * self.canvas().h, out);
             self.draw_studio_cart(out);
             return draw_empty_slot(canvas, self.slot_faces, out);
@@ -10301,18 +10780,39 @@ impl App {
             match item {
                 Item::Cart => self.draw_studio_cart(out),
                 Item::Sheet => self.draw_studio_sheet(out),
-                Item::Text { text, style, align, x, y, alpha, scale } => {
-                    self.studio_put_text(text, *style, *align, *x, *y, *alpha, *scale, out)
-                }
-                Item::Rect { x, y, w, h, color } => {
-                    out.push(Draw::Rect { x: *x, y: *y, w: *w, h: *h, colour: *color })
-                }
-                Item::Chip { cell, row, x, y, selected } => {
-                    self.draw_studio_chip(*cell, *row, *x, *y, *selected, out)
-                }
+                Item::Text {
+                    text,
+                    style,
+                    align,
+                    x,
+                    y,
+                    alpha,
+                    scale,
+                } => self.studio_put_text(text, *style, *align, *x, *y, *alpha, *scale, out),
+                Item::Rect { x, y, w, h, color } => out.push(Draw::Rect {
+                    x: *x,
+                    y: *y,
+                    w: *w,
+                    h: *h,
+                    colour: *color,
+                }),
+                Item::Chip {
+                    cell,
+                    row,
+                    x,
+                    y,
+                    selected,
+                } => self.draw_studio_chip(*cell, *row, *x, *y, *selected, out),
                 Item::Dot { x, y, size, alpha } => {
                     if let Some(disc) = self.studio_disc {
-                        out.push(Draw::Tex { x: *x, y: *y, w: *size, h: *size, tex: disc, alpha: *alpha });
+                        out.push(Draw::Tex {
+                            x: *x,
+                            y: *y,
+                            w: *size,
+                            h: *size,
+                            tex: disc,
+                            alpha: *alpha,
+                        });
                     }
                 }
             }
@@ -10331,7 +10831,15 @@ impl App {
         self.draw_studio_legends(studio, out);
     }
 
-    fn draw_studio_chip(&self, cell: u32, row: u32, x: f32, y: f32, selected: bool, out: &mut Vec<Draw>) {
+    fn draw_studio_chip(
+        &self,
+        cell: u32,
+        row: u32,
+        x: f32,
+        y: f32,
+        selected: bool,
+        out: &mut Vec<Draw>,
+    ) {
         let Some((tex, w, h)) = self.studio_chips else {
             return;
         };
@@ -10339,7 +10847,14 @@ impl App {
         let grow = if selected { 3.0 } else { 0.0 };
         if let (true, Some(disc)) = (selected, self.studio_disc) {
             let ring = size + 2.0 * grow + 6.0;
-            out.push(Draw::Tex { x: x - grow - 3.0, y: y - grow - 3.0, w: ring, h: ring, tex: disc, alpha: 1.0 });
+            out.push(Draw::Tex {
+                x: x - grow - 3.0,
+                y: y - grow - 3.0,
+                w: ring,
+                h: ring,
+                tex: disc,
+                alpha: 1.0,
+            });
         }
         let cell_w = crate::studio_faces::CHIP as f32 / w as f32;
         let cell_h = crate::studio_faces::CHIP as f32 / h as f32;
@@ -10387,7 +10902,14 @@ impl App {
         let gap = (self.canvas().w - total) / (faces.len() + 1) as f32;
         let mut x = gap;
         for (tex, w) in faces {
-            out.push(Draw::Tex { x: x.floor(), y: self.legend_y(), w: w as f32, h: MOUTH_H, tex, alpha: 1.0 });
+            out.push(Draw::Tex {
+                x: x.floor(),
+                y: self.legend_y(),
+                w: w as f32,
+                h: MOUTH_H,
+                tex,
+                alpha: 1.0,
+            });
             x += w as f32 + gap;
         }
     }
@@ -10395,14 +10917,22 @@ impl App {
     fn draw_studio_cart(&self, out: &mut Vec<Draw>) {
         let since = self.studio_closing.unwrap_or(self.studio_opened);
         let t = (self.now().saturating_sub(since) as f32 / STUDIO_SLIDE_MS).min(1.0);
-        let e = if self.studio_closing.is_some() { 1.0 - ease(t) } else { ease(t) };
+        let e = if self.studio_closing.is_some() {
+            1.0 - ease(t)
+        } else {
+            ease(t)
+        };
         let (from, to) = (self.studio_from, self.studio_cart_rect());
         let at = |i: usize| from[i] + (to[i] - from[i]) * e;
         let rect = [at(0), at(1), at(2), at(3)];
         let centre = [rect[0] + rect[2] / 2.0, rect[1] + rect[3] / 2.0];
-        let corners =
-            crate::studio_view::turned(rect, centre, crate::studio_view::CART_TILT * e);
-        let quad = |tex: TexId| Draw::Quad { corners, tex, uv: [0.0, 0.0, 1.0, 1.0], alpha: 1.0 };
+        let corners = crate::studio_view::turned(rect, centre, crate::studio_view::CART_TILT * e);
+        let quad = |tex: TexId| Draw::Quad {
+            corners,
+            tex,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            alpha: 1.0,
+        };
         let Some(tex) = &self.studio_tex else {
             for under in self.studio_shelf_under.into_iter().flatten() {
                 out.push(quad(under));
@@ -10451,7 +10981,12 @@ impl App {
                     ],
                 ),
             };
-            out.push(Draw::Quad { corners: strip.corners, tex: t, uv, alpha: 1.0 });
+            out.push(Draw::Quad {
+                corners: strip.corners,
+                tex: t,
+                uv,
+                alpha: 1.0,
+            });
         }
     }
 
@@ -10478,13 +11013,22 @@ impl App {
             well[3] as f32 * sy,
         ];
         let t = tray(self.canvas().w, &studio.cart);
-        let spot = [t.x + SLIP_PAD, TRAY_TOP + self.canvas().inset_y() + scene.used_y + SLIP_PAD];
+        let spot = [
+            t.x + SLIP_PAD,
+            TRAY_TOP + self.canvas().inset_y() + scene.used_y + SLIP_PAD,
+        ];
         let centre = [x + w / 2.0, y + h / 2.0];
         let tilt = crate::studio_view::CART_TILT;
         let cart = crate::studio_view::turned([x, y, w, h], centre, tilt);
         let seat = crate::studio_view::turned(rect, centre, tilt)[0];
         let (dx, dy) = (seat[0] - rect[0], seat[1] - rect[1]);
-        let seated = Pose { x: dx, y: dy, z: 0.0, turn_deg: tilt, scale: 1.0 };
+        let seated = Pose {
+            x: dx,
+            y: dy,
+            z: 0.0,
+            turn_deg: tilt,
+            scale: 1.0,
+        };
         let pose_at = |p: f32| {
             let arc = (p * std::f32::consts::PI).sin();
             Pose {
@@ -10501,7 +11045,12 @@ impl App {
             return;
         };
         if !top {
-            out.push(Draw::Quad { corners: cart, tex: tex.bare, uv: [0.0, 0.0, 1.0, 1.0], alpha: 1.0 });
+            out.push(Draw::Quad {
+                corners: cart,
+                tex: tex.bare,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                alpha: 1.0,
+            });
             return;
         }
         let stick = |t: TexId, flat: f32, curl: f32, pose: Pose, out: &mut Vec<Draw>| {
@@ -10532,7 +11081,13 @@ impl App {
     fn draw_studio_ground(&self, top: f32, out: &mut Vec<Draw>) {
         let w = self.canvas().w;
         let h = self.canvas().h;
-        out.push(Draw::Rect { x: 0.0, y: top, w, h, colour: [0.122, 0.267, 0.216, 1.0] });
+        out.push(Draw::Rect {
+            x: 0.0,
+            y: top,
+            w,
+            h,
+            colour: [0.122, 0.267, 0.216, 1.0],
+        });
         let line = |x: f32, y: f32, w: f32, h: f32, a: f32| Draw::Rect {
             x,
             y,
@@ -10572,7 +11127,14 @@ impl App {
             h,
             colour: [0.0, 0.0, 0.0, 0.4],
         });
-        out.push(Draw::Tex { x, y, w, h, tex: liner, alpha: 1.0 });
+        out.push(Draw::Tex {
+            x,
+            y,
+            w,
+            h,
+            tex: liner,
+            alpha: 1.0,
+        });
         let (Some(kind), Some(tex)) = (kind, &self.studio_tex) else {
             return;
         };
@@ -10650,7 +11212,11 @@ impl App {
             rest(out);
         }
         for slip in slips().filter(|s| held(s)) {
-            let zoom = if piled { 1.0 } else { crate::studio::slip_zoom(elapsed) };
+            let zoom = if piled {
+                1.0
+            } else {
+                crate::studio::slip_zoom(elapsed)
+            };
             let (w, h) = (t.slip_w * zoom, t.slip_h * zoom);
             let x = t.x - apart - (w - t.slip_w) / 2.0;
             let y = TRAY_TOP + slip.y(now) - (h - t.slip_h) / 2.0;
@@ -10679,8 +11245,8 @@ impl App {
             self.draw_slip(kind, TRAY_TOP + scene.used_y, shift, 1.0, out);
         }
         let printing = self.studio_slips.iter().find(|s| s.printing(now));
-        let travel = self.studio_prints as f32 * t.slip_h
-            + printing.map_or(0.0, |s| s.y(now) - s.y1);
+        let travel =
+            self.studio_prints as f32 * t.slip_h + printing.map_or(0.0, |s| s.y(now) - s.y1);
         if let Some(liner) = self.studio_liner {
             let tile = 60.0 / 121.0;
             out.push(Draw::Part {
@@ -10690,11 +11256,22 @@ impl App {
                 h: 24.0,
                 tex: liner,
                 alpha: 1.0,
-                uv: [0.0, 1.0 - tile - (travel.rem_euclid(60.0) / 121.0), 1.0, 24.0 / 121.0],
+                uv: [
+                    0.0,
+                    1.0 - tile - (travel.rem_euclid(60.0) / 121.0),
+                    1.0,
+                    24.0 / 121.0,
+                ],
             });
         }
         let (px, pw) = (t.printer_x, t.printer_w);
-        out.push(Draw::Rect { x: px, y: 20.0, w: pw, h: 34.0, colour: [0.0, 0.0, 0.0, 0.45] });
+        out.push(Draw::Rect {
+            x: px,
+            y: 20.0,
+            w: pw,
+            h: 34.0,
+            colour: [0.0, 0.0, 0.0, 0.45],
+        });
         if let Some(body) = self.studio_printer {
             out.push(Draw::Part {
                 x: px,
@@ -10768,7 +11345,12 @@ impl App {
     }
 
     fn finish_studio_write(&mut self, wait: bool) {
-        if !wait && self.studio_write.as_ref().is_some_and(|w| !w.0.is_finished()) {
+        if !wait
+            && self
+                .studio_write
+                .as_ref()
+                .is_some_and(|w| !w.0.is_finished())
+        {
             return;
         }
         let Some((write, undo)) = self.studio_write.take() else {
@@ -10801,7 +11383,9 @@ impl App {
             if studio.recolored() && studio.wearing_text() {
                 let mut edited = studio.cart.clone();
                 edited.shell = studio.shell;
-                let png = studio.ground.map(|c| crate::art::make::text_label(&edited, c));
+                let png = studio
+                    .ground
+                    .map(|c| crate::art::make::text_label(&edited, c));
                 let path = crate::art::make::label_path(&root, &studio.cart);
                 let _ = match &png {
                     Some(png) => crate::art::make::relabel(&root, &studio.cart, png),
@@ -10835,7 +11419,11 @@ impl App {
         }
         let now = self.now();
         let (last, at, run) = self.studio_repeat;
-        let run = if last == Some(btn) && now.saturating_sub(at) < 300 { run + 1 } else { 0 };
+        let run = if last == Some(btn) && now.saturating_sub(at) < 300 {
+            run + 1
+        } else {
+            0
+        };
         self.studio_repeat = (Some(btn), now, run);
         let Some(studio) = &mut self.studio else {
             return;
@@ -11022,7 +11610,10 @@ impl App {
 
     pub fn fetch_featured_ready(&self) -> bool {
         match &self.fetch_art {
-            Some(FetchArt::Summary { featured: Some(cart), .. }) => self
+            Some(FetchArt::Summary {
+                featured: Some(cart),
+                ..
+            }) => self
                 .fetch_tex
                 .iter()
                 .any(|(p, s, _)| *p == cart.platform && *s == cart.stem),
@@ -11130,10 +11721,22 @@ impl App {
         let top = ((room - (2.0 * LINE_H + BAR_H + 2.0 * GAP)) / 2.0).floor();
         let (x, y) = ((mid - BAR_W / 2.0).floor(), top + LINE_H + GAP);
         self.draw_fetch_text(0, mid, top, out);
-        out.push(Draw::Rect { x, y, w: BAR_W, h: BAR_H, colour: [1.0, 1.0, 1.0, 0.2] });
+        out.push(Draw::Rect {
+            x,
+            y,
+            w: BAR_W,
+            h: BAR_H,
+            colour: [1.0, 1.0, 1.0, 0.2],
+        });
         let filled = done.min(total) as f32 / total.max(1) as f32;
         if filled > 0.0 {
-            out.push(Draw::Rect { x, y, w: BAR_W * filled, h: BAR_H, colour: [1.0, 1.0, 1.0, 1.0] });
+            out.push(Draw::Rect {
+                x,
+                y,
+                w: BAR_W * filled,
+                h: BAR_H,
+                colour: [1.0, 1.0, 1.0, 1.0],
+            });
         }
         self.draw_fetch_text(1, mid, y + BAR_H + GAP, out);
     }
@@ -11161,7 +11764,12 @@ impl App {
                     Some(scene) => {
                         self.draw_fetch_scene(scene, out);
                         self.draw_fetch_text(0, mid, 26.0, out);
-                        self.draw_fetch_text(1, mid, slot_ui::slot_name_y(self.canvas()) - 30.0, out);
+                        self.draw_fetch_text(
+                            1,
+                            mid,
+                            slot_ui::slot_name_y(self.canvas()) - 30.0,
+                            out,
+                        );
                         self.draw_fetch_text(2, mid, slot_ui::slot_name_y(self.canvas()), out);
                     }
                     None => {
@@ -11212,9 +11820,23 @@ impl App {
             let (w, h) = (tex.w as f32 * scale, tex.h as f32 * scale);
             let (x, y) = (MARGIN + (COLUMN - w) / 2.0, ((ground - h) / 2.0).floor());
             for under in tex.under.into_iter().flatten() {
-                out.push(Draw::Tex { x, y, w, h, tex: under, alpha: 1.0 });
+                out.push(Draw::Tex {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tex: under,
+                    alpha: 1.0,
+                });
             }
-            out.push(Draw::Tex { x, y, w, h, tex: tex.done, alpha: 1.0 });
+            out.push(Draw::Tex {
+                x,
+                y,
+                w,
+                h,
+                tex: tex.done,
+                alpha: 1.0,
+            });
         }
         let rows = (self.fetch_text.len().saturating_sub(1) / 2) as f32;
         let block = 64.0 + rows * ROW;
@@ -11223,10 +11845,24 @@ impl App {
         for row in 0..rows as usize {
             let y = top + 64.0 + row as f32 * ROW;
             if let Some(&(tex, w, h)) = self.fetch_text.get(1 + row * 2) {
-                out.push(Draw::Tex { x: left, y, w: w as f32, h: h as f32, tex, alpha: 1.0 });
+                out.push(Draw::Tex {
+                    x: left,
+                    y,
+                    w: w as f32,
+                    h: h as f32,
+                    tex,
+                    alpha: 1.0,
+                });
             }
             if let Some(&(tex, w, h)) = self.fetch_text.get(2 + row * 2) {
-                out.push(Draw::Tex { x: right - w as f32, y, w: w as f32, h: h as f32, tex, alpha: 1.0 });
+                out.push(Draw::Tex {
+                    x: right - w as f32,
+                    y,
+                    w: w as f32,
+                    h: h as f32,
+                    tex,
+                    alpha: 1.0,
+                });
             }
         }
     }
@@ -11239,7 +11875,10 @@ impl App {
         };
         self.draw_fetch_text(1, self.canvas().w / 2.0, 72.0, out);
         let [left, right] = crate::fetch_art::choice_xs(self.canvas().w);
-        for (i, (x, kind)) in [(left, ArtKind::Real), (right, ArtKind::Logo)].into_iter().enumerate() {
+        for (i, (x, kind)) in [(left, ArtKind::Real), (right, ArtKind::Logo)]
+            .into_iter()
+            .enumerate()
+        {
             let (tex, w, h) = faces[i];
             let (w, h) = (w as f32 * SCALE, h as f32 * SCALE);
             let on = kind == pick;
@@ -11267,20 +11906,40 @@ impl App {
         let (scale, well) = match scene.cart.platform {
             Platform::Gba | Platform::Gbav => (
                 1.0,
-                [slot_ui::LABEL_X, slot_ui::LABEL_Y, slot_ui::LABEL_W, slot_ui::LABEL_H],
+                [
+                    slot_ui::LABEL_X,
+                    slot_ui::LABEL_Y,
+                    slot_ui::LABEL_W,
+                    slot_ui::LABEL_H,
+                ],
             ),
             #[cfg(feature = "nds")]
             Platform::Nds => (
                 1.0,
-                [slot_ui::DS_LABEL_X, slot_ui::DS_LABEL_Y, slot_ui::DS_LABEL_W, slot_ui::DS_LABEL_H],
+                [
+                    slot_ui::DS_LABEL_X,
+                    slot_ui::DS_LABEL_Y,
+                    slot_ui::DS_LABEL_W,
+                    slot_ui::DS_LABEL_H,
+                ],
             ),
             Platform::Gb => (
                 0.72,
-                [slot_ui::GB_LABEL_X, slot_ui::GB_LABEL_Y, slot_ui::GB_LABEL_W, slot_ui::GB_LABEL_H],
+                [
+                    slot_ui::GB_LABEL_X,
+                    slot_ui::GB_LABEL_Y,
+                    slot_ui::GB_LABEL_W,
+                    slot_ui::GB_LABEL_H,
+                ],
             ),
             Platform::Gbc => (
                 0.72,
-                [slot_ui::GBC_LABEL_X, slot_ui::GBC_LABEL_Y, slot_ui::GBC_LABEL_W, slot_ui::GBC_LABEL_H],
+                [
+                    slot_ui::GBC_LABEL_X,
+                    slot_ui::GBC_LABEL_Y,
+                    slot_ui::GBC_LABEL_W,
+                    slot_ui::GBC_LABEL_H,
+                ],
             ),
         };
         let (fw, fh) = (tex.w as f32, tex.h as f32);
@@ -11316,7 +11975,11 @@ impl App {
         };
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
         let (stage, p) = stage_at(self.now() as f64 - scene.started_ms);
-        let sticker = |t: TexId, flat: f32, curl: f32, pose: slot_ui::sticker_curl::Pose, out: &mut Vec<Draw>| {
+        let sticker = |t: TexId,
+                       flat: f32,
+                       curl: f32,
+                       pose: slot_ui::sticker_curl::Pose,
+                       out: &mut Vec<Draw>| {
             let focus = [self.canvas().w / 2.0, 240.0];
             for strip in slot_ui::sticker_curl::strips(rect, flat, curl, &pose, focus) {
                 let (tex, uv) = match (strip.back, self.fetch_paper) {
@@ -11381,7 +12044,11 @@ impl App {
         }
     }
 
-    pub fn cart_shells(&self, platform: Platform, stem: &str) -> Vec<Option<slot_store::ShellChoice>> {
+    pub fn cart_shells(
+        &self,
+        platform: Platform,
+        stem: &str,
+    ) -> Vec<Option<slot_store::ShellChoice>> {
         self.shelves
             .iter()
             .flat_map(|(_, shelf)| shelf.carts.iter())
@@ -11496,17 +12163,18 @@ impl App {
         }
         let now = self.now() as f64;
         let playable: Vec<(Platform, String)> = match &self.fetch_art {
-            Some(FetchArt::Running(run)) if !run.queue.is_empty() => self
-                .carts()
-                .map(|c| (c.platform, c.stem.clone()))
-                .collect(),
+            Some(FetchArt::Running(run)) if !run.queue.is_empty() => {
+                self.carts().map(|c| (c.platform, c.stem.clone())).collect()
+            }
             _ => Vec::new(),
         };
         let Some(FetchArt::Running(run)) = &mut self.fetch_art else {
             return;
         };
         let unplayable = run.drop_unplayable(&|l: &ArtLanded| {
-            playable.iter().any(|(p, s)| *p == l.platform && *s == l.stem)
+            playable
+                .iter()
+                .any(|(p, s)| *p == l.platform && *s == l.stem)
         });
         self.fetch_landed.extend(unplayable);
         let Some(FetchArt::Running(run)) = &mut self.fetch_art else {
@@ -11530,9 +12198,10 @@ impl App {
             };
             run.closing = picked.cloned().map(|cart| (cart, now));
         }
-        let waiting = run.closing.as_ref().is_some_and(|(cart, since)| {
-            required && !built(cart) && now - since < SUMMARY_WAIT_MS
-        });
+        let waiting = run
+            .closing
+            .as_ref()
+            .is_some_and(|(cart, since)| required && !built(cart) && now - since < SUMMARY_WAIT_MS);
         let over = (run.over() && !waiting).then(|| FetchArt::Summary {
             featured: run.closing.as_ref().map(|(cart, _)| cart.clone()),
             stopped: run.stopping,
@@ -11678,10 +12347,10 @@ impl App {
         self.restock_all_games();
         self.restock_collections();
         for ((_, shelf), (index, seat)) in self.shelves.iter_mut().zip(seats) {
-            let found = shelf
-                .carts
-                .iter()
-                .position(|c| seat.as_ref().is_some_and(|(p, s)| c.platform == *p && c.stem == *s));
+            let found = shelf.carts.iter().position(|c| {
+                seat.as_ref()
+                    .is_some_and(|(p, s)| c.platform == *p && c.stem == *s)
+            });
             if !shelf.carts.is_empty() {
                 shelf.select(found.unwrap_or(index.min(shelf.carts.len() - 1)));
             }
@@ -11718,7 +12387,9 @@ impl App {
     }
 
     pub fn server_scene_running(&self) -> bool {
-        self.server.as_ref().is_some_and(ServerSession::scene_running)
+        self.server
+            .as_ref()
+            .is_some_and(ServerSession::scene_running)
     }
 
     pub fn server_paper(&self) -> Option<&ServerPaper> {
@@ -11794,7 +12465,10 @@ impl App {
     fn open_networks(&mut self) {
         let joined = self.wifi().status.ssid.clone().filter(|_| self.wifi_up());
         self.phase = Phase::Networks {
-            pick: joined.map_or(crate::networks::NetPick::Top, crate::networks::NetPick::Name),
+            pick: joined.map_or(
+                crate::networks::NetPick::Top,
+                crate::networks::NetPick::Name,
+            ),
         };
         if !self.state.wifi_off {
             self.hold_wifi();
@@ -11848,7 +12522,9 @@ impl App {
                 return;
             }
             Action::GbaDown(Btn::B) | Action::QuickMenu => {
-                self.phase = Phase::Networks { pick: NetPick::Scan };
+                self.phase = Phase::Networks {
+                    pick: NetPick::Scan,
+                };
                 return;
             }
             _ => return,
@@ -12091,7 +12767,9 @@ impl App {
         }
         for (_, shelf) in &mut self.shelves {
             for i in 0..shelf.carts.len() {
-                if shelf.carts[i].stem == stem && platform.is_none_or(|p| shelf.carts[i].platform == p) {
+                if shelf.carts[i].stem == stem
+                    && platform.is_none_or(|p| shelf.carts[i].platform == p)
+                {
                     shelf.set_wrapped(i, None);
                 }
             }
@@ -12375,7 +13053,8 @@ impl App {
                     self.wifi_send(crate::wifi::Cmd::Forget(id));
                 }
                 let now = self.now();
-                self.hud.toast_saying(Toast::Forgotten, &format!("{ssid} was forgotten"), now);
+                self.hud
+                    .toast_saying(Toast::Forgotten, &format!("{ssid} was forgotten"), now);
                 self.forgotten = Some(ssid.clone());
                 self.phase = Phase::Networks {
                     pick: crate::networks::NetPick::Name(ssid),
@@ -12428,7 +13107,10 @@ impl App {
                 let rows = page_rows(snap, ssid, off);
                 Some(NetScreen {
                     selected: (*row).min(rows.len() - 1),
-                    lines: rows.iter().map(|r| page_line(*r, snap, ssid, off)).collect(),
+                    lines: rows
+                        .iter()
+                        .map(|r| page_line(*r, snap, ssid, off))
+                        .collect(),
                     message: None,
                 })
             }
@@ -12469,7 +13151,8 @@ impl App {
     }
 
     pub fn network_back(&self) -> &'static str {
-        let scanning = matches!(self.phase, Phase::NetworkScan { .. }) && self.wifi().scan.is_none();
+        let scanning =
+            matches!(self.phase, Phase::NetworkScan { .. }) && self.wifi().scan.is_none();
         if scanning {
             "Cancel"
         } else {
@@ -12621,10 +13304,9 @@ impl App {
             ),
             UpdateState::Notice(NetNotice::Password) => ("Invalid Password".into(), String::new()),
             UpdateState::Notice(NetNotice::RommPort) => ("Invalid Port".into(), String::new()),
-            UpdateState::Notice(NetNotice::NoNetwork) => (
-                "Not connected".into(),
-                "Join a Wi-Fi network to use Tools.".into(),
-            ),
+            UpdateState::Notice(NetNotice::NoNetwork) => {
+                ("Not connected".into(), "Join a Wi-Fi network first.".into())
+            }
             UpdateState::Notice(NetNotice::RommNoServer) => (
                 "Enter a server first".into(),
                 "Set Server before pairing.".into(),
@@ -12637,10 +13319,9 @@ impl App {
             | UpdateState::Closing(_) => return None,
             UpdateState::Failed(f) => {
                 let (title, detail) = match f {
-                    UpdateFail::NoWifi => (
-                        "Could not join Wi-Fi",
-                        "Check Wi-Fi in the General menu.",
-                    ),
+                    UpdateFail::NoWifi => {
+                        ("Could not join Wi-Fi", "Check Wi-Fi in the System menu.")
+                    }
                     UpdateFail::Offline => (
                         "Could not connect",
                         "Check the network has internet access.",
@@ -13116,9 +13797,7 @@ impl App {
                 | UpdateState::Failed(_)
                 | UpdateState::CheckFailed
                 | UpdateState::Notice(_),
-            ) => {
-                self.draw_side_legend(back, false, self.legend_y(), out)
-            }
+            ) => self.draw_side_legend(back, false, self.legend_y(), out),
             _ => {}
         }
     }

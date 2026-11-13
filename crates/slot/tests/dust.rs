@@ -1,3 +1,5 @@
+mod common;
+
 use slot::app::{App, Phase};
 use slot::audio::Sfx;
 use slot::dust::{glitch, Dust, PUFF_TAP};
@@ -73,11 +75,15 @@ fn turning_dusty_carts_off_in_the_menu_stops_the_glitch() {
     let mut a = app_with(Platform::Gba, &["Emerald", "Zelda"]);
     a.set_dust(Dust::always(1));
     a.apply(Action::QuickMenu);
-    a.apply(Action::GbaDown(Btn::Down));
-    a.apply(Action::GbaDown(Btn::Down));
-    a.apply(Action::GbaDown(Btn::A));
-    a.apply(Action::GbaDown(Btn::Up));
-    a.apply(Action::GbaDown(Btn::A));
+    for row in [slot_ui::QuickRow::Game, slot_ui::QuickRow::Experimental] {
+        common::reach(
+            &mut a,
+            row,
+            |a| a.quick_menu(),
+            |a| a.apply(Action::GbaDown(Btn::Down)),
+        );
+        a.apply(Action::GbaDown(Btn::A));
+    }
     assert_eq!(
         a.quick_menu(),
         Some(slot_ui::QuickRow::Dusty),
