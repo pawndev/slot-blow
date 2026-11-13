@@ -26,6 +26,7 @@ use crate::app::{App, LinkRow, Phase, UpdateCart, UpdateScene};
 
 use crate::build_info::Build;
 use crate::cart_faces::CartFaces;
+use crate::dry::{self, Dry};
 use crate::dust::{self, Dust};
 use crate::face_builder::FaceBuilder;
 use crate::label_cache::{self, Rebuild};
@@ -557,6 +558,7 @@ fn save_headers_when_changed(root: std::path::PathBuf) {
 enum Picture {
     Blank,
     Glitch,
+    Bench,
     Game(u64, u64),
 }
 
@@ -1209,6 +1211,12 @@ impl Frontend {
             self.picture_is(Picture::Glitch, compositor);
             dust::glitch(&mut self.glitch, g.platform, g.seed, g.at, g.puff);
             compositor.upload_game(&self.glitch);
+        } else if self.session.app().bench().is_some() {
+            self.picture_is(Picture::Bench, compositor);
+            if let Some(bench) = self.session.app().bench() {
+                dry::paint(&mut self.glitch, bench);
+            }
+            compositor.upload_game(&self.glitch);
         } else if let Some([r, g, b]) = self.session.app().blank_panel() {
             self.picture_is(Picture::Blank, compositor);
             let px = (slot_gfx::SRC_W * slot_gfx::SRC_H) as usize;
@@ -1333,6 +1341,10 @@ impl Frontend {
 
     pub fn set_dust(&mut self, dust: Dust) {
         self.session.app_mut().set_dust(dust);
+    }
+
+    pub fn set_dry(&mut self, dry: Dry) {
+        self.session.app_mut().set_dry(dry);
     }
 
     pub fn drive_emulator(&mut self) {
