@@ -27,6 +27,7 @@ pub mod crash {
 }
 pub mod drc;
 pub mod ds_view;
+pub mod dust;
 pub mod editing;
 pub mod emu;
 pub mod face_builder;

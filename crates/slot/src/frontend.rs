@@ -26,6 +26,7 @@ use crate::app::{App, LinkRow, Phase, UpdateCart, UpdateScene};
 
 use crate::build_info::Build;
 use crate::cart_faces::CartFaces;
+use crate::dust::{self, Dust};
 use crate::face_builder::FaceBuilder;
 use crate::label_cache::{self, Rebuild};
 use crate::link_art_builder::LinkArtBuilder;
@@ -72,6 +73,7 @@ pub struct Frontend {
     print_stage: Option<std::sync::mpsc::Receiver<Option<crate::print_scene::StageArt>>>,
     print_stage_asked: bool,
     quick_clock: QuickClock,
+    glitch: Vec<u8>,
     quick_network: QuickClock,
     quick_romm: [QuickClock; 4],
     quick_kid_shelf: QuickClock,
@@ -554,6 +556,7 @@ fn save_headers_when_changed(root: std::path::PathBuf) {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Picture {
     Blank,
+    Glitch,
     Game(u64, u64),
 }
 
@@ -632,6 +635,7 @@ impl Frontend {
             print_stage: None,
             print_stage_asked: false,
             quick_clock: QuickClock::default(),
+            glitch: Vec::new(),
             quick_network: QuickClock::default(),
             quick_romm: Default::default(),
             quick_kid_shelf: Default::default(),
@@ -1028,11 +1032,13 @@ impl Frontend {
         let core_legend_light = pack(faces.core_legend_light);
         let steps = faces.link_steps.into_iter().map(&mut up).collect();
         let fails = faces.link_fails.into_iter().map(&mut up).collect();
+        let (blow, blow_w, _) = up(faces.blow);
         if let Some(look) = &mut self.look {
             look.legend = [link_legend.clone(), link_legend_light];
             look.applied = None;
         }
         let app = self.session.app_mut();
+        app.set_blow_face(blow, blow_w);
         app.set_link_badge_faces(link_badges);
         app.set_shutdown_faces(lines);
         app.set_repair_faces(repair);
@@ -1199,7 +1205,11 @@ impl Frontend {
         if self.draw_rebuild(compositor) {
             return false;
         }
-        if let Some([r, g, b]) = self.session.app().blank_panel() {
+        if let Some(g) = self.session.app().glitch() {
+            self.picture_is(Picture::Glitch, compositor);
+            dust::glitch(&mut self.glitch, g.platform, g.seed, g.at, g.puff);
+            compositor.upload_game(&self.glitch);
+        } else if let Some([r, g, b]) = self.session.app().blank_panel() {
             self.picture_is(Picture::Blank, compositor);
             let px = (slot_gfx::SRC_W * slot_gfx::SRC_H) as usize;
             compositor.upload_game(&[b, g, r, 0xff].repeat(px));
@@ -1319,6 +1329,10 @@ impl Frontend {
         );
         sync_guide(self.session.app_mut(), compositor, &mut self.guide_page);
         true
+    }
+
+    pub fn set_dust(&mut self, dust: Dust) {
+        self.session.app_mut().set_dust(dust);
     }
 
     pub fn drive_emulator(&mut self) {
@@ -1603,6 +1617,7 @@ struct UiFaces {
     link_steps: Vec<UndoFace>,
     link_fails: Vec<UndoFace>,
     toasts: Vec<CartFace>,
+    blow: UndoFace,
     repair: Vec<UndoFace>,
     reset: Vec<UndoFace>,
     kid: Vec<UndoFace>,
@@ -1680,6 +1695,7 @@ impl UiFaces {
                 .map(|f| menu_face(f.line()))
                 .collect(),
             toasts: Toast::all().into_iter().map(toast_face).collect(),
+            blow: hint_face("B", "Blow"),
             update_legends: update_legends(footer_ink(false)),
             repair: {
                 let [not_now, repair] = repair_legends(footer_ink(false));

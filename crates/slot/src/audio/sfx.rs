@@ -18,7 +18,11 @@ pub enum Sfx {
     DsEject,
     PrintBuzz,
     Tear,
+    Blow,
 }
+
+const BLOW_S: f32 = 0.32;
+const BLOW_GAIN: f32 = 9000.0;
 
 impl Sfx {
     pub fn lead(self) -> f32 {
@@ -29,7 +33,7 @@ impl Sfx {
             Sfx::DsInsert => 0.541,
             #[cfg(feature = "nds")]
             Sfx::DsEject => 0.011,
-            Sfx::PrintBuzz | Sfx::Tear => 0.0,
+            Sfx::PrintBuzz | Sfx::Tear | Sfx::Blow => 0.0,
         }
     }
 
@@ -43,12 +47,13 @@ impl Sfx {
             Sfx::DsEject => DS_EJECT,
             Sfx::PrintBuzz => PRINT_BUZZ,
             Sfx::Tear => TEAR,
+            Sfx::Blow => &[],
         }
     }
 
     fn level(self) -> f32 {
         match self {
-            Sfx::Insert | Sfx::Eject => 1.0,
+            Sfx::Insert | Sfx::Eject | Sfx::Blow => 1.0,
             #[cfg(feature = "nds")]
             Sfx::DsInsert | Sfx::DsEject => 1.0,
             Sfx::PrintBuzz => 0.40,
@@ -57,10 +62,16 @@ impl Sfx {
     }
 
     pub fn tail(self) -> f32 {
+        if self == Sfx::Blow {
+            return BLOW_S;
+        }
         self.pcm().len() as f32 / 2.0 / ASSET_HZ - self.lead()
     }
 
     pub fn render(self, sample_rate: u32) -> Vec<i16> {
+        if self == Sfx::Blow {
+            return breath(sample_rate);
+        }
         let pcm = self.pcm();
         let level = self.level();
         let mut out = Vec::with_capacity(pcm.len());
@@ -71,6 +82,30 @@ impl Sfx {
         }
         out
     }
+}
+
+fn breath(sample_rate: u32) -> Vec<i16> {
+    let rate = sample_rate as f32;
+    let n = (BLOW_S * rate) as usize;
+    let mut out = Vec::with_capacity(n * 2);
+    let mut seed: u32 = 0x1234_5678;
+    let (mut low, mut slow) = (0.0f32, 0.0f32);
+    let k = 1.0 - (-std::f32::consts::TAU * 2200.0 / rate).exp();
+    let k_slow = 1.0 - (-std::f32::consts::TAU * 180.0 / rate).exp();
+    for i in 0..n {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let white = seed as f32 / u32::MAX as f32 * 2.0 - 1.0;
+        low += k * (white - low);
+        slow += k_slow * (low - slow);
+        let t = i as f32 / rate;
+        let env = (t / 0.04).min(1.0) * ((BLOW_S - t) / 0.12).clamp(0.0, 1.0);
+        let s = ((low - slow) * BLOW_GAIN * env) as i16;
+        out.push(s);
+        out.push(s);
+    }
+    out
 }
 
 fn resampled(pcm: &[u8], sample_rate: u32) -> Vec<f32> {
