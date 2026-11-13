@@ -55,9 +55,9 @@ pub struct Frontend {
     rebuild_faces: RebuildFaces,
     link_art: LinkArtBuilder,
     link_art_done: bool,
-    core_asked: Option<(Console, String)>,
+    core_asked: Option<WornStem>,
     core_tex: CoreTextures,
-    core_built: Option<(Console, String)>,
+    core_built: Option<WornStem>,
     undo_tex: Option<TexId>,
     switcher: Switcher,
     guide_page: GuidePage,
@@ -2652,24 +2652,26 @@ fn sync_core_picker(
     app: &mut App,
     compositor: &mut Compositor,
     builder: &FaceBuilder,
-    asked: &mut Option<(Console, String)>,
+    asked: &mut Option<WornStem>,
     tex: &mut CoreTextures,
-    built: &mut Option<(Console, String)>,
+    built: &mut Option<WornStem>,
 ) {
     if app.take_core_stale() {
         *asked = None;
         *built = None;
     }
-    let highlighted = app.selected_cart().map(|c| (c.platform, c.stem.clone()));
+    let highlighted = app
+        .selected_cart()
+        .map(|c| (c.platform, c.stem.clone(), app.cart_wear(&c.stem).to_bits()));
     if let Some(cart) = app.selected_cart().filter(|_| *asked != highlighted) {
-        builder.request(cart.clone());
+        builder.request(cart.clone(), app.cart_wear(&cart.stem));
         *asked = highlighted.clone();
     }
     let Some(faces) = builder.take() else {
         return;
     };
-    let made = Some((faces.platform, faces.stem.clone()));
-    if highlighted != made || *built == highlighted {
+    let made = Some((faces.platform, faces.stem.clone(), faces.wear.to_bits()));
+    if highlighted != made || *built == made {
         return;
     }
     let interior_id = upload_rgba(
@@ -2739,6 +2741,8 @@ fn sync_box_art(app: &mut App, compositor: &mut Compositor, sync: &mut BoxArtSyn
         platform: art.platform,
     }));
 }
+
+type WornStem = (Console, String, u32);
 
 fn upload(compositor: &mut Compositor, slot: &mut Option<TexId>, face: slot_ui::UndoFace) -> TexId {
     upload_rgba(compositor, slot, face.w, face.h, &face.rgba)

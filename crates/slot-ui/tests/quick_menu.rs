@@ -173,9 +173,11 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Rumble",
             "Left Stick as D-Pad",
             "Resume on Insert",
-            "Resume on Power On"
+            "Resume on Power On",
+            "Experimental"
         ]
     );
+    assert_eq!(QuickRow::EXPERIMENTAL.map(QuickRow::label), ["Label Wear"]);
     let opens: Vec<QuickRow> = QuickRow::ALL.into_iter().filter(|r| r.opens()).collect();
     assert_eq!(
         opens,
@@ -214,6 +216,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::Networks,
             QuickRow::CheckUpdates,
             QuickRow::Server,
+            QuickRow::Experimental,
             QuickRow::Romm,
             QuickRow::RommServer,
             QuickRow::RommPort,
@@ -237,6 +240,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
         &QuickRow::SCREEN_GBA[..],
         &QuickRow::SCREEN_GBC[..],
         &QuickRow::SCREEN_GB[..],
+        &QuickRow::EXPERIMENTAL[..],
     ] {
         for &row in page {
             assert_eq!(row.page(), page, "{row:?}");

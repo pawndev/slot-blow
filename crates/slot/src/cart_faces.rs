@@ -6,7 +6,7 @@ use std::thread;
 
 use slot_gfx::{Compositor, TexId};
 use slot_store::Cart;
-use slot_ui::{cart_face_with, cart_interior, shows_interior, CartFace};
+use slot_ui::{cart_face_worn, cart_interior, shows_interior, CartFace};
 
 use crate::app::{App, FaceWant};
 use crate::label_cache::label_art;
@@ -20,7 +20,7 @@ type Built = (Key, CartFace, Option<CartFace>);
 
 #[derive(Default)]
 struct Queue {
-    jobs: VecDeque<(Key, Cart)>,
+    jobs: VecDeque<(Key, Cart, f32)>,
     closed: bool,
 }
 
@@ -28,19 +28,19 @@ type Shared = Arc<(Mutex<Queue>, Condvar)>;
 
 #[derive(Default)]
 struct Building {
-    carts: HashMap<Key, Cart>,
+    carts: HashMap<Key, (Cart, u32)>,
     outdated: HashSet<Key>,
 }
 
 impl Building {
-    fn start(&mut self, key: Key, cart: &Cart) -> bool {
+    fn start(&mut self, key: Key, cart: &Cart, wear: f32) -> bool {
         match self.carts.get(&key) {
             None => {
-                self.carts.insert(key, cart.clone());
+                self.carts.insert(key, (cart.clone(), wear.to_bits()));
                 true
             }
-            Some(building) => {
-                if building != cart {
+            Some((building, worn)) => {
+                if building != cart || *worn != wear.to_bits() {
                     self.outdated.insert(key);
                 }
                 false
@@ -55,7 +55,7 @@ impl Building {
 
     fn finish(&mut self, key: Key, seated: Option<&Cart>) -> bool {
         let built = self.carts.remove(&key);
-        !self.outdated.remove(&key) && built.as_ref() == seated
+        !self.outdated.remove(&key) && built.as_ref().map(|(cart, _)| cart) == seated
     }
 }
 
@@ -64,6 +64,7 @@ pub struct CartFaces {
     built: Receiver<Built>,
     building: Building,
     asked: Vec<FaceWant>,
+    worn: Vec<Key>,
     free: Vec<TexId>,
 }
 
@@ -85,6 +86,7 @@ impl CartFaces {
             built,
             building: Building::default(),
             asked: Vec::new(),
+            worn: Vec::new(),
             free: Vec::new(),
         }
     }
@@ -95,7 +97,9 @@ impl CartFaces {
             self.place(app, compositor, key, face, interior);
         }
         let wants = app.face_wants();
-        if wants != self.asked {
+        let worn = app.take_worn();
+        if wants != self.asked || !worn.is_empty() {
+            self.worn.extend(worn);
             self.requeue(app, &wants);
             self.asked = wants;
         }
@@ -117,14 +121,15 @@ impl CartFaces {
     fn requeue(&mut self, app: &App, wants: &[FaceWant]) {
         let (lock, wake) = &*self.queue;
         let mut queue = lock.lock().unwrap_or_else(|e| e.into_inner());
-        for (key, _) in queue.jobs.drain(..) {
+        for (key, _, _) in queue.jobs.drain(..) {
             self.building.unqueue(key);
         }
-        for w in wants {
-            let key = (w.shelf, w.index);
-            if let Some(cart) = app.face_cart(w.shelf, w.index) {
-                if self.building.start(key, cart) {
-                    queue.jobs.push_back((key, cart.clone()));
+        let keys = wants.iter().map(|w| (w.shelf, w.index));
+        for key in keys.chain(self.worn.iter().copied()) {
+            if let Some(cart) = app.face_cart(key.0, key.1) {
+                let wear = app.cart_wear(&cart.stem);
+                if self.building.start(key, cart, wear) {
+                    queue.jobs.push_back((key, cart.clone(), wear));
                 }
             }
         }
@@ -153,6 +158,7 @@ impl CartFaces {
         if !self.building.finish(key, app.face_cart(key.0, key.1)) {
             return;
         }
+        self.worn.retain(|k| *k != key);
         let tex = self.texture(compositor, &face);
         self.free.extend(app.set_cart_face(key.0, key.1, tex));
         if let Some(interior) = interior {
@@ -173,7 +179,7 @@ impl Drop for CartFaces {
 fn work(queue: &Shared, outbox: &Sender<Built>, root: &Path) {
     let (lock, wake) = &**queue;
     loop {
-        let (key, cart) = {
+        let (key, cart, wear) = {
             let mut q = lock.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if q.closed {
@@ -186,7 +192,7 @@ fn work(queue: &Shared, outbox: &Sender<Built>, root: &Path) {
             }
         };
         slot_store::header_index::verify(&cart.rom);
-        let face = cart_face_with(&cart, label_art(root, &cart));
+        let face = cart_face_worn(&cart, label_art(root, &cart), wear);
         let interior = shows_interior(&cart).then(|| cart_interior(&cart));
         if outbox.send((key, face, interior)).is_err() {
             return;
@@ -217,27 +223,37 @@ mod tests {
         let old = cart("A");
         let mut new = old.clone();
         new.label = Some("new.png".into());
-        assert!(b.start((0, 0), &old));
-        assert!(!b.start((0, 0), &new));
+        assert!(b.start((0, 0), &old, 0.0));
+        assert!(!b.start((0, 0), &new, 0.0));
         assert!(!b.finish((0, 0), Some(&new)));
-        assert!(b.start((0, 0), &new));
+        assert!(b.start((0, 0), &new, 0.0));
         assert!(b.finish((0, 0), Some(&new)));
+    }
+
+    #[test]
+    fn a_face_built_before_the_cart_wore_is_thrown_away() {
+        let mut b = Building::default();
+        assert!(b.start((0, 0), &cart("A"), 0.0));
+        assert!(!b.start((0, 0), &cart("A"), 0.5));
+        assert!(!b.finish((0, 0), Some(&cart("A"))));
+        assert!(b.start((0, 0), &cart("A"), 0.5));
+        assert!(b.finish((0, 0), Some(&cart("A"))));
     }
 
     #[test]
     fn the_same_cart_asked_twice_builds_once_and_lands() {
         let mut b = Building::default();
-        assert!(b.start((0, 0), &cart("A")));
-        assert!(!b.start((0, 0), &cart("A")));
+        assert!(b.start((0, 0), &cart("A"), 0.0));
+        assert!(!b.start((0, 0), &cart("A"), 0.0));
         assert!(b.finish((0, 0), Some(&cart("A"))));
     }
 
     #[test]
     fn a_face_whose_seat_now_holds_another_cart_is_thrown_away() {
         let mut b = Building::default();
-        assert!(b.start((3, 0), &cart("A")));
+        assert!(b.start((3, 0), &cart("A"), 0.0));
         assert!(!b.finish((3, 0), Some(&cart("B"))));
-        assert!(b.start((3, 1), &cart("A")));
+        assert!(b.start((3, 1), &cart("A"), 0.0));
         assert!(!b.finish((3, 1), None));
     }
 }
