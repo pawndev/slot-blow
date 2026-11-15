@@ -1806,8 +1806,34 @@ fn an_invited_cart_never_comes_up_dusty() {
     kid.card_for(emerald_from(Core::Gpsp));
     kid.press(Btn::A);
     assert!(
-        matches!(kid.s.app().phase(), Phase::Inserting { dud: None, .. }),
+        matches!(kid.s.app().phase(), Phase::Inserting { snag: None, .. }),
         "the invited cart rolled dusty: {:?}",
+        kid.s.app().phase()
+    );
+    kid.ready_on(Core::Gpsp);
+    kid.until("the join never started", |k| !k.joined().is_empty());
+    assert_eq!(kid.joined(), vec![RadioRole::Join(AP)]);
+}
+
+#[test]
+fn an_invited_cart_never_comes_up_dry() {
+    let d = common::tmp_root_with_carts(&["Emerald", "Zzz"]);
+    common::write_hack_header(&d, "Emerald", "POKEMON EMER", "BPEE");
+    let mut kid = kid_session(
+        d,
+        slot_store::SlotState {
+            dry: true,
+            ..kid_slot(slot_store::KidMode::Shelves, None)
+        },
+        (Platform::Gba, Core::Gpsp, "Emerald"),
+        Far::Waits,
+    );
+    kid.s.app_mut().set_dry(slot::dry::Dry::always(7));
+    kid.card_for(emerald_from(Core::Gpsp));
+    kid.press(Btn::A);
+    assert!(
+        matches!(kid.s.app().phase(), Phase::Inserting { snag: None, .. }),
+        "the invited cart rolled dry: {:?}",
         kid.s.app().phase()
     );
     kid.ready_on(Core::Gpsp);

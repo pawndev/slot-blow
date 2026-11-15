@@ -27,6 +27,7 @@ pub mod crash {
     pub fn install() {}
 }
 pub mod drc;
+pub mod dry;
 pub mod ds_view;
 pub mod dust;
 pub mod editing;
@@ -57,6 +58,7 @@ pub mod overlay;
 pub mod pacer;
 pub mod panel_turn;
 pub mod persist;
+pub mod pixel_font;
 pub mod prefetch;
 pub mod print_scene;
 pub mod resample;
