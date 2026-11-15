@@ -24,6 +24,7 @@ fn app_with(platform: Platform, stems: &[&str]) -> App {
                 code: String::new(),
                 shell: None,
                 title: stem.to_uppercase(),
+                tags: Vec::new(),
             })
             .collect(),
     );
