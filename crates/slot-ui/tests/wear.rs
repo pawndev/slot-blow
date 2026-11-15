@@ -1,5 +1,5 @@
 use slot_store::{Cart, Platform};
-use slot_ui::{cart_face_worn, wear_for, wear_label, wear_seed};
+use slot_ui::{cart_face_worn, label_size, wear_for, wear_label, wear_seed, writes_by_hand};
 
 const HOUR: u64 = 3600;
 
@@ -38,9 +38,8 @@ fn the_same_cart_wears_the_same_way_every_time() {
     assert_ne!(label(wear_seed("Emerald")), label(wear_seed("Fusion")));
 }
 
-#[test]
-fn an_unworn_face_is_the_plain_face() {
-    let cart = Cart {
+fn emerald() -> Cart {
+    Cart {
         platform: Platform::Gba,
         stem: "Emerald".into(),
         rom: "/x/Emerald.gba".into(),
@@ -48,10 +47,29 @@ fn an_unworn_face_is_the_plain_face() {
         title: String::new(),
         code: String::new(),
         shell: None,
-    };
-    let plain = slot_ui::cart_face_with(&cart, None);
-    let unworn = cart_face_worn(&cart, None, 0.0);
-    let worn = cart_face_worn(&cart, None, 0.5);
+        tags: Vec::new(),
+    }
+}
+
+#[test]
+fn an_unworn_face_is_the_plain_face() {
+    let cart = emerald();
+    let (lw, lh) = label_size(&cart);
+    let art = || Some([40u8, 160, 90, 255].repeat((lw * lh) as usize));
+    let plain = slot_ui::cart_face_with(&cart, art());
+    let unworn = cart_face_worn(&cart, art(), 0.0);
+    let worn = cart_face_worn(&cart, art(), 0.5);
     assert_eq!(plain.rgba, unworn.rgba);
     assert_ne!(plain.rgba, worn.rgba);
+}
+
+#[test]
+fn a_handwritten_label_does_not_wear() {
+    let cart = emerald();
+    if !writes_by_hand(&cart) {
+        return;
+    }
+    let plain = slot_ui::cart_face_with(&cart, None);
+    let worn = cart_face_worn(&cart, None, 1.0);
+    assert_eq!(plain.rgba, worn.rgba);
 }

@@ -21,6 +21,7 @@ fn dusty(platform: Platform) -> App {
                 code: String::new(),
                 shell: None,
                 title: stem.to_uppercase(),
+                tags: Vec::new(),
             })
             .collect(),
     );
