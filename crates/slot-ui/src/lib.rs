@@ -46,6 +46,7 @@ mod sticker;
 pub mod sticker_curl;
 pub mod text;
 mod toast;
+mod wear;
 
 pub use art::decode as decode_png;
 pub use backdrop::{
@@ -71,12 +72,12 @@ pub use board::{
     SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 pub use cart::{
-    bare_face, cart_backing, cart_box, cart_face, cart_face_with, cart_interior, cart_shadow,
-    clean_label, folder_gb_shell, gb_cart_shadow, gb_shell_of, hand_reveal, is_clear, label_colour,
-    label_panel, label_size, label_tags, label_text, neutral_shell, seated_box, shelf_shape,
-    shows_interior, text_label, writes_by_hand, CartFace, HandReveal, CART_H, CART_W, GBC_LABEL_H,
-    GBC_LABEL_W, GBC_LABEL_X, GBC_LABEL_Y, GB_CART_H, GB_CART_W, GB_LABEL_H, GB_LABEL_W,
-    GB_LABEL_X, GB_LABEL_Y, LABEL_H, LABEL_W, LABEL_WELL, LABEL_X, LABEL_Y,
+    bare_face, cart_backing, cart_box, cart_face, cart_face_with, cart_face_worn, cart_interior,
+    cart_shadow, clean_label, folder_gb_shell, gb_cart_shadow, gb_shell_of, hand_reveal, is_clear,
+    label_colour, label_panel, label_size, label_tags, label_text, neutral_shell, seated_box,
+    shelf_shape, shows_interior, text_label, writes_by_hand, CartFace, HandReveal, CART_H, CART_W,
+    GBC_LABEL_H, GBC_LABEL_W, GBC_LABEL_X, GBC_LABEL_Y, GB_CART_H, GB_CART_W, GB_LABEL_H,
+    GB_LABEL_W, GB_LABEL_X, GB_LABEL_Y, LABEL_H, LABEL_W, LABEL_WELL, LABEL_X, LABEL_Y,
 };
 #[cfg(feature = "nds")]
 pub use cart::{DS_LABEL_H, DS_LABEL_W, DS_LABEL_X, DS_LABEL_Y};
@@ -163,3 +164,4 @@ pub use sticker::{
     DS_CREDITS, DS_STICKER_H, DS_STICKER_W, HOME, ORIGIN, STICKER_H, STICKER_W,
 };
 pub use toast::{toast_box, toast_face, toast_face_text, toast_rect, Toast};
+pub use wear::{wear_for, wear_label, wear_seed};

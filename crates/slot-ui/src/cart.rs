@@ -8,6 +8,7 @@ use crate::board::{BOARD_H, BOARD_W};
 use crate::shell::{shell_for, Finish, Shell};
 use crate::silhouette::{cart_mask, gb_cart_mask, GbShell};
 use crate::text;
+use crate::wear;
 
 pub const CART_W: u32 = 360;
 pub const CART_H: u32 = (CART_W * SEATED_H + SEATED_W / 2) / SEATED_W;
@@ -402,6 +403,10 @@ pub fn hand_reveal(cart: &Cart, frames: u32) -> Option<HandReveal> {
 }
 
 pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
+    cart_face_worn(cart, art, 0.0)
+}
+
+pub fn cart_face_worn(cart: &Cart, art: Option<Vec<u8>>, worn: f32) -> CartFace {
     let s = spec(shape_of(cart));
     if art.is_none() {
         if let Some(face) = handwritten(&s, cart) {
@@ -409,7 +414,7 @@ pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
         }
     }
     let mut face = shell_face(&s, &shell_for(cart));
-    let label = match art {
+    let mut label = match art {
         Some(rgba) => rgba,
         #[cfg(feature = "nds")]
         None if cart.platform == Platform::Nds => banner_label(&s, cart),
@@ -418,6 +423,8 @@ pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
             generated_label(&s, &title, label_colour(&title))
         }
     };
+    let (_, _, lw, lh) = s.label;
+    wear::wear_label(&mut label, lw, lh, worn, wear::wear_seed(&cart.stem));
     paste_label(&s, &mut face, &label);
     clip_to_silhouette(&s, &mut face);
     face
