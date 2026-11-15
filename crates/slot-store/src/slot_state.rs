@@ -461,6 +461,7 @@ pub struct SlotState {
     pub rewind: bool,
     pub gb_palettes: bool,
     pub gb_palette: GbPalette,
+    pub dusty: bool,
     pub appearance: Appearance,
     pub wallpaper: WallpaperPick,
     pub wallpaper_tint: WallpaperTint,
@@ -650,6 +651,7 @@ impl Default for SlotState {
             rewind: true,
             gb_palettes: false,
             gb_palette: GbPalette::DEFAULT,
+            dusty: true,
             appearance: Appearance::Dark,
             wallpaper: WallpaperPick::Default,
             wallpaper_tint: WallpaperTint::Off,
@@ -747,7 +749,7 @@ fn write_list(root: &Path, name: &str, list: &[Recent]) -> std::io::Result<()> {
 
 pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
     let mut text = format!(
-        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nzone={}\nclock_24h={}\nnetwork_time={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction_gba={}\ncolour_correction_gb={}\nshader_gba={}\nshader_gb={}\nrewind={}\ngb_palettes={}\ngb_palette={}\nappearance={}\nwallpaper={}\n",
+        "cart={}\ncart_platform={}\nbrightness={}\nblue_light={}\nvolume={}\nvolume_hp={}\nmuted={}\nmuted_hp={}\nclock_set={}\nzone={}\nclock_24h={}\nnetwork_time={}\nrumble={}\nff_speed={}\nff_sound={}\ncolour_correction_gba={}\ncolour_correction_gb={}\nshader_gba={}\nshader_gb={}\nrewind={}\ngb_palettes={}\ngb_palette={}\ndusty={}\nappearance={}\nwallpaper={}\n",
         s.cart.as_deref().unwrap_or(""),
         s.cart_platform.map_or(String::new(), platform_key),
         s.brightness,
@@ -770,6 +772,7 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.rewind as u8,
         s.gb_palettes as u8,
         s.gb_palette.core_name(),
+        s.dusty as u8,
         s.appearance.name(),
         s.wallpaper.key()
     );
@@ -892,6 +895,7 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut rewind = None;
     let mut gb_palettes = None;
     let mut gb_palette = None;
+    let mut dusty = None;
     let mut appearance = None;
     let mut wallpaper = None;
     let mut wallpaper_tint = None;
@@ -962,6 +966,7 @@ fn parse(text: &str) -> Option<SlotState> {
             "rewind" => rewind = flag(value),
             "gb_palettes" => gb_palettes = flag(value),
             "gb_palette" => gb_palette = GbPalette::parse(value),
+            "dusty" => dusty = flag(value),
             "appearance" => appearance = Appearance::parse(value),
             "wallpaper" => wallpaper = Some(WallpaperPick::parse(value)),
             "wallpaper_tint" => wallpaper_tint = WallpaperTint::parse(value),
@@ -1044,6 +1049,7 @@ fn parse(text: &str) -> Option<SlotState> {
         rewind: rewind.unwrap_or(fallback.rewind),
         gb_palettes: gb_palettes.unwrap_or(fallback.gb_palettes),
         gb_palette: gb_palette.unwrap_or(fallback.gb_palette),
+        dusty: dusty.unwrap_or(fallback.dusty),
         appearance: appearance.unwrap_or(fallback.appearance),
         wallpaper: wallpaper.unwrap_or(fallback.wallpaper),
         wallpaper_tint: wallpaper_tint.unwrap_or(fallback.wallpaper_tint),

@@ -1788,3 +1788,29 @@ fn the_early_join_waits_for_home_wifi_to_let_go() {
         "the early join started before home Wi-Fi stopped"
     );
 }
+
+#[test]
+fn an_invited_cart_never_comes_up_dusty() {
+    let d = common::tmp_root_with_carts(&["Emerald", "Zzz"]);
+    common::write_hack_header(&d, "Emerald", "POKEMON EMER", "BPEE");
+    let mut kid = kid_session(
+        d,
+        slot_store::SlotState {
+            dusty: true,
+            ..kid_slot(slot_store::KidMode::Shelves, None)
+        },
+        (Platform::Gba, Core::Gpsp, "Emerald"),
+        Far::Waits,
+    );
+    kid.s.app_mut().set_dust(slot::dust::Dust::always(7));
+    kid.card_for(emerald_from(Core::Gpsp));
+    kid.press(Btn::A);
+    assert!(
+        matches!(kid.s.app().phase(), Phase::Inserting { dud: None, .. }),
+        "the invited cart rolled dusty: {:?}",
+        kid.s.app().phase()
+    );
+    kid.ready_on(Core::Gpsp);
+    kid.until("the join never started", |k| !k.joined().is_empty());
+    assert_eq!(kid.joined(), vec![RadioRole::Join(AP)]);
+}

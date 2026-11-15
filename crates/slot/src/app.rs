@@ -27,6 +27,7 @@ use crate::art::make::Kind as ArtKind;
 use crate::audio::Sfx;
 use crate::ble::{Ble, BleWant, Heard};
 use crate::core_picker::{Chip, CorePicker, Outcome, Press};
+use crate::dust::{self, Dust, Glitch};
 use crate::fetch_art::{
     stage_at, FetchArt, FetchTex, Landed as ArtLanded, Run as ArtRun, Scene as ArtScene, Stage,
 };
@@ -78,6 +79,19 @@ pub const POWER_ON_S: f32 = 0.22;
 
 const POWER_OFF_S: f32 = 0.16;
 
+const RESEAT_HOLD_S: f32 = 0.15;
+
+const BLOW_HINT_MS: Millis = 900;
+const BLOW_FADE_MS: Millis = 300;
+const BLOW_PLATE_H: f32 = 40.0;
+const BLOW_MARGIN: f32 = 24.0;
+const BLOW_PAD: f32 = 12.0;
+const BLOW_GAP: f32 = 14.0;
+const BLOW_BAR_W: f32 = 160.0;
+const BLOW_BAR_H: f32 = 6.0;
+const BLOW_PLATE: [f32; 4] = [0.0, 0.0, 0.0, 0.72];
+const BLOW_TRACK: [f32; 4] = [1.0, 1.0, 1.0, 0.18];
+const BLOW_FILL: [f32; 4] = [0.96, 0.95, 0.94, 1.0];
 const FOOTER_SLIDE_S: f32 = POWER_ON_S;
 const GIFT_REACH: i32 = 4;
 
@@ -425,6 +439,15 @@ pub enum Phase {
         core_ready: bool,
         resumed: bool,
         clean: bool,
+        dud: Option<u64>,
+    },
+    Dud {
+        cart: String,
+        seed: u64,
+        since: Millis,
+        puff: f32,
+        held: bool,
+        sounded: Millis,
     },
     Playing {
         cart: String,
@@ -824,6 +847,9 @@ pub struct App {
     battery: Option<Battery>,
     last_led: Option<LedState>,
     powering_off: bool,
+    dust: Dust,
+    reseat: bool,
+    blow_face: Option<(TexId, u32)>,
     radio: Box<dyn RadioJobs>,
     update_jobs: Box<dyn UpdateJobs>,
     art_jobs: Box<dyn ArtJobs>,
@@ -1359,6 +1385,9 @@ impl App {
             battery: None,
             last_led: None,
             powering_off: false,
+            dust: Dust::clean(),
+            reseat: false,
+            blow_face: None,
         }
     }
 
@@ -1444,9 +1473,13 @@ impl App {
                 self.shelf_at = at;
                 self.shelf_mut().select(i);
                 self.insert(!self.state.resume_power_on);
-                if let Phase::Inserting { resumed, t, .. } = &mut self.phase {
+                if let Phase::Inserting {
+                    resumed, t, dud, ..
+                } = &mut self.phase
+                {
                     *resumed = true;
                     *t = INSERT_S;
+                    *dud = None;
                 }
             }
             None => {
@@ -2909,6 +2942,7 @@ impl App {
             QuickRow::LeftStick => Some(QuickValue::flag(self.state.left_stick_dpad)),
             QuickRow::ResumeInsert => Some(QuickValue::flag(self.state.resume_insert)),
             QuickRow::ResumePowerOn => Some(QuickValue::flag(self.state.resume_power_on)),
+            QuickRow::Dusty => Some(QuickValue::flag(self.state.dusty)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
             QuickRow::Recents => Some(if self.state.show_recents {
                 QuickValue::Show
@@ -3042,7 +3076,8 @@ impl App {
             | QuickRow::Controls
             | QuickRow::ControlsShelf
             | QuickRow::ControlsCollections
-            | QuickRow::ControlsInGame => None,
+            | QuickRow::ControlsInGame
+            | QuickRow::Experimental => None,
             #[cfg(feature = "nds")]
             QuickRow::FetchBoxArt => None,
         }
@@ -3137,6 +3172,7 @@ impl App {
         self.kid_toast_due = true;
         let seated = match &self.phase {
             Phase::Inserting { cart, .. }
+            | Phase::Dud { cart, .. }
             | Phase::Playing { cart }
             | Phase::Ejecting { cart, .. } => Some(cart.clone()),
             _ => None,
@@ -4030,6 +4066,7 @@ impl App {
     pub fn seated_cart(&self) -> Option<&Cart> {
         let stem = match &self.phase {
             Phase::Inserting { cart, .. }
+            | Phase::Dud { cart, .. }
             | Phase::Playing { cart }
             | Phase::Ejecting { cart, .. }
             | Phase::Polaroids { cart } => cart,
@@ -6252,6 +6289,12 @@ impl App {
                 _ => {}
             },
             Phase::Inserting { .. } if action == Action::Eject => self.eject(),
+            Phase::Dud { .. } => match action {
+                Action::GbaDown(Btn::B) => self.blow(now),
+                Action::GbaUp(Btn::B) => self.stop_blowing(),
+                Action::Eject => self.eject(),
+                _ => {}
+            },
             Phase::Playing { .. } => match action {
                 Action::GbaDown(Btn::L1)
                     if self.slot_owns_the_shoulders()
@@ -6570,7 +6613,8 @@ impl App {
             | QuickRow::Controls
             | QuickRow::ControlsShelf
             | QuickRow::ControlsCollections
-            | QuickRow::ControlsInGame => {
+            | QuickRow::ControlsInGame
+            | QuickRow::Experimental => {
                 if let Some(row) = row.child() {
                     let row = row.shown(&self.hidden_rows())[0];
                     self.phase = Phase::QuickMenu { row };
@@ -6596,6 +6640,7 @@ impl App {
             | QuickRow::GbShader
             | QuickRow::GbcShader
             | QuickRow::GbPalette
+            | QuickRow::Dusty
             | QuickRow::Rumble
             | QuickRow::LeftStick
             | QuickRow::Theme
@@ -6885,6 +6930,7 @@ impl App {
             QuickRow::LeftStick => s.left_stick_dpad = !s.left_stick_dpad,
             QuickRow::ResumeInsert => s.resume_insert = !s.resume_insert,
             QuickRow::ResumePowerOn => s.resume_power_on = !s.resume_power_on,
+            QuickRow::Dusty => s.dusty = !s.dusty,
             QuickRow::Rewind => s.rewind = !s.rewind,
             QuickRow::GbaBlending => {
                 s.blending_gba = s.blending_gba.step(&Blending::ALL, right);
@@ -7013,7 +7059,8 @@ impl App {
             | QuickRow::RommPairedServer
             | QuickRow::RommDisconnect
             | QuickRow::Nickname
-            | QuickRow::Server => return,
+            | QuickRow::Server
+            | QuickRow::Experimental => return,
             #[cfg(feature = "nds")]
             QuickRow::FetchBoxArt => return,
         }
@@ -7361,6 +7408,8 @@ impl App {
             }
         }
         let mut touched = false;
+        let mut blew = false;
+        let reseat = self.reseat;
         let at = self.shelf_at;
         let fly = self.ds_fly_rates();
         let clicks = self.cart_clicks();
@@ -7380,6 +7429,7 @@ impl App {
                 t,
                 core_ready,
                 resumed,
+                dud,
                 ..
             } => {
                 let was = *t;
@@ -7389,11 +7439,40 @@ impl App {
                 };
                 let at = SEATED_AT - clicks.0.lead() * fly.0;
                 touched = !*resumed && was < at && *t >= at;
-                (*t >= INSERT_S && *core_ready).then(|| Phase::Playing {
-                    cart: std::mem::take(cart),
+                (*t >= INSERT_S && *core_ready).then(|| match dud.take() {
+                    Some(seed) => Phase::Dud {
+                        cart: std::mem::take(cart),
+                        seed,
+                        since: now,
+                        puff: 0.0,
+                        held: false,
+                        sounded: now,
+                    },
+                    None => Phase::Playing {
+                        cart: std::mem::take(cart),
+                    },
                 })
             }
-            Phase::Ejecting { t, .. } => {
+            Phase::Dud {
+                cart,
+                puff,
+                held,
+                sounded,
+                ..
+            } => {
+                if *puff < 1.0 {
+                    *puff = dust::puffed(*puff, *held, dt);
+                }
+                if *held && now.saturating_sub(*sounded) >= dust::PUFF_SOUND_MS {
+                    *sounded = now;
+                    blew = true;
+                }
+                (*puff >= 1.0).then(|| Phase::Ejecting {
+                    cart: std::mem::take(cart),
+                    t: -RESEAT_HOLD_S,
+                })
+            }
+            Phase::Ejecting { cart, t } => {
                 if self.screen <= 0.0 {
                     let was = *t;
                     *t += match *t >= 0.0 {
@@ -7403,7 +7482,17 @@ impl App {
                     let at = clicks.2 - clicks.1.lead() * fly.1;
                     touched = was < at && *t >= at;
                 }
-                (*t >= EJECT_S).then_some(Phase::Shelf)
+                (*t >= EJECT_S).then(|| match reseat {
+                    true => Phase::Inserting {
+                        cart: std::mem::take(cart),
+                        t: 0.0,
+                        core_ready: false,
+                        resumed: false,
+                        clean: false,
+                        dud: None,
+                    },
+                    false => Phase::Shelf,
+                })
             }
             _ => None,
         };
@@ -7412,6 +7501,8 @@ impl App {
                 Phase::Ejecting { .. } => clicks.1,
                 _ => clicks.0,
             });
+        } else if blew {
+            self.sfx = Some(Sfx::Blow);
         }
         if let Some(phase) = next {
             if matches!(self.phase, Phase::Ejecting { .. }) && self.two_panels && self.ds_seated() {
@@ -7419,20 +7510,34 @@ impl App {
             }
             self.phase = phase;
             self.refused_from = None;
-            if matches!(self.phase, Phase::Shelf) {
-                if let Some(seat) = self.invite_return.take() {
-                    self.sit(seat);
+            match self.phase {
+                Phase::Ejecting { .. } => self.reseat = true,
+                Phase::Inserting { .. } => {
+                    self.reseat = false;
+                    let roll = self.roll_dud();
+                    if let Phase::Inserting { dud, .. } = &mut self.phase {
+                        *dud = roll;
+                    }
                 }
-                self.land_for_kid();
+                Phase::Shelf => {
+                    if let Some(seat) = self.invite_return.take() {
+                        self.sit(seat);
+                    }
+                    self.land_for_kid();
+                }
+                _ => {}
             }
             let seated = match &self.phase {
-                Phase::Playing { cart } => Some(cart.clone()),
+                Phase::Playing { cart } => Some(Some(cart.clone())),
+                Phase::Shelf => Some(None),
                 _ => None,
             };
-            if seated.is_none() {
-                self.link_loaded = None;
+            if let Some(seated) = seated {
+                if seated.is_none() {
+                    self.link_loaded = None;
+                }
+                self.record_cart(seated);
             }
-            self.record_cart(seated);
             if let Some(heard) = self.join_later.take() {
                 if self.seated().is_some() {
                     self.join_host(heard);
@@ -7448,8 +7553,10 @@ impl App {
             Some(_) => self.blank_s + dt,
             None => 0.0,
         };
-        let lit = matches!(self.phase, Phase::Playing { .. } | Phase::Polaroids { .. })
-            || self.powering_up();
+        let lit = matches!(
+            self.phase,
+            Phase::Playing { .. } | Phase::Polaroids { .. } | Phase::Dud { .. }
+        ) || self.powering_up();
         let step = if lit {
             dt / POWER_ON_S
         } else {
@@ -7463,6 +7570,7 @@ impl App {
         let sliding = matches!(
             self.phase,
             Phase::Inserting { .. }
+                | Phase::Dud { .. }
                 | Phase::Playing { .. }
                 | Phase::Polaroids { .. }
                 | Phase::Ejecting { .. }
@@ -8049,6 +8157,7 @@ impl App {
             self.phase,
             Phase::Inserting { .. } | Phase::Playing { .. } | Phase::Ejecting { .. }
         );
+        let dud = matches!(self.phase, Phase::Dud { .. });
         match (screen, below) {
             (Screen::Top, true) => self.draw_top_under_menu(out),
             (Screen::Bottom, true) => single(out),
@@ -8059,6 +8168,7 @@ impl App {
             (Screen::Top, false) if gaming && self.screen > 0.0 && self.panel_lit() => {
                 out.push(Draw::Game)
             }
+            (Screen::Top, false) if dud && self.screen > 0.0 => out.push(Draw::Game),
             (Screen::Top, false) => self.draw_top_idle(out),
             (Screen::Bottom, false) if ds => {}
             (Screen::Bottom, false) if matches!(self.phase, Phase::Playing { .. }) => {}
@@ -8625,6 +8735,14 @@ impl App {
             Phase::Playing { cart } if self.screen < 1.0 => {
                 self.draw_background(out);
                 self.chrome(cart, 0.0, out);
+            }
+            Phase::Dud { cart, .. } if self.screen < 1.0 => {
+                self.draw_background(out);
+                self.chrome(cart, 0.0, out);
+            }
+            Phase::Dud { since, puff, .. } => {
+                out.push(Draw::Game);
+                self.draw_blow(*since, *puff, out);
             }
             Phase::Playing { .. } if below && !self.ds_seated() => self.draw_background(out),
             Phase::Playing { .. } => self.push_game(out),
@@ -10267,12 +10385,13 @@ impl App {
             alert: self.alert_face.filter(|_| alpha > 0.0).map(|t| (t, alpha)),
             dim,
             screen: self.screen,
-            game: self.panel_lit(),
+            game: self.panel_lit() || matches!(self.phase, Phase::Dud { .. }),
             over: !self.powering_up()
                 && !matches!(
                     &self.phase,
                     Phase::Inserting { resumed: true, .. }
                         | Phase::Playing { .. }
+                        | Phase::Dud { .. }
                         | Phase::Ejecting { .. }
                 ),
             behind: self.shelf().behind(stem),
@@ -10771,6 +10890,7 @@ impl App {
         self.play_held = None;
         self.refusal = None;
         self.refused_from = None;
+        self.reseat = false;
         self.sunlight_manual = None;
         self.stop_romm();
         if let Some(mark) = &self.loading {
@@ -10784,7 +10904,20 @@ impl App {
             core_ready: false,
             resumed: false,
             clean,
+            dud: None,
         };
+        let roll = self.roll_dud();
+        if let Phase::Inserting { dud, .. } = &mut self.phase {
+            *dud = roll;
+        }
+    }
+
+    fn roll_dud(&mut self) -> Option<u64> {
+        let invited = self.invite_return.is_some() || self.join_later.is_some();
+        if !self.state.dusty || self.ds_seated() || invited {
+            return None;
+        }
+        self.dust.roll()
     }
 
     pub fn starting_clean(&self) -> bool {
@@ -10815,9 +10948,12 @@ impl App {
         };
         self.in_game_menu = None;
         let cart = match &mut self.phase {
-            Phase::Playing { cart } | Phase::Inserting { cart, .. } => std::mem::take(cart),
+            Phase::Playing { cart } | Phase::Inserting { cart, .. } | Phase::Dud { cart, .. } => {
+                std::mem::take(cart)
+            }
             _ => return,
         };
+        self.reseat = false;
         self.end_link();
         self.close_game_menu();
         self.flush_eject(&cart);
@@ -10938,7 +11074,9 @@ impl App {
         self.state_writer.flush();
         self.flush_resume();
         let cart = match &mut self.phase {
-            Phase::Playing { cart } | Phase::Polaroids { cart } => Some(std::mem::take(cart)),
+            Phase::Playing { cart } | Phase::Polaroids { cart } | Phase::Dud { cart, .. } => {
+                Some(std::mem::take(cart))
+            }
             _ => None,
         };
         let row = self.album_row();
@@ -16016,6 +16154,101 @@ impl App {
 
     pub fn set_icon_faces(&mut self, faces: Vec<TexId>) {
         self.hud.set_icons(faces);
+    }
+
+    pub fn set_dust(&mut self, dust: Dust) {
+        self.dust = dust;
+    }
+
+    pub fn set_blow_face(&mut self, face: TexId, w: u32) {
+        self.blow_face = Some((face, w));
+    }
+
+    pub fn glitch(&self) -> Option<Glitch> {
+        let Phase::Dud {
+            seed, since, puff, ..
+        } = &self.phase
+        else {
+            return None;
+        };
+        Some(Glitch {
+            platform: self.seated_cart()?.platform,
+            seed: *seed,
+            at: self.now().saturating_sub(*since),
+            puff: *puff,
+        })
+    }
+
+    fn blow(&mut self, now: Millis) {
+        let Phase::Dud {
+            puff,
+            held,
+            sounded,
+            ..
+        } = &mut self.phase
+        else {
+            return;
+        };
+        *puff = (*puff + dust::PUFF_TAP).min(1.0);
+        *held = true;
+        *sounded = now;
+        self.sfx = Some(Sfx::Blow);
+    }
+
+    fn stop_blowing(&mut self) {
+        if let Phase::Dud { held, .. } = &mut self.phase {
+            *held = false;
+        }
+    }
+
+    fn draw_blow(&self, since: Millis, puff: f32, out: &mut Vec<Draw>) {
+        let shown = self.now().saturating_sub(since + BLOW_HINT_MS);
+        let alpha = match puff > 0.0 {
+            true => 1.0,
+            false => (shown as f32 / BLOW_FADE_MS as f32).min(1.0),
+        };
+        if alpha <= 0.0 {
+            return;
+        }
+        let face_w = self.blow_face.map_or(0.0, |(_, w)| w as f32);
+        let gap = if face_w > 0.0 { BLOW_GAP } else { 0.0 };
+        let w = BLOW_PAD * 2.0 + face_w + gap + BLOW_BAR_W;
+        let x = ((OUT_W as f32 - w) / 2.0).round();
+        let y = OUT_H as f32 - BLOW_PLATE_H - BLOW_MARGIN;
+        let faded = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * alpha];
+        out.push(Draw::Rect {
+            x,
+            y,
+            w,
+            h: BLOW_PLATE_H,
+            colour: faded(BLOW_PLATE),
+        });
+        if let Some((tex, fw)) = self.blow_face {
+            out.push(Draw::Tex {
+                x: x + BLOW_PAD,
+                y: y + (BLOW_PLATE_H - slot_ui::HINT_H as f32) / 2.0,
+                w: fw as f32,
+                h: slot_ui::HINT_H as f32,
+                tex,
+                alpha,
+            });
+        }
+        let bx = x + BLOW_PAD + face_w + gap;
+        let by = y + (BLOW_PLATE_H - BLOW_BAR_H) / 2.0;
+        out.push(Draw::Rect {
+            x: bx,
+            y: by,
+            w: BLOW_BAR_W,
+            h: BLOW_BAR_H,
+            colour: faded(BLOW_TRACK),
+        });
+        out.push(Draw::Rect {
+            x: bx,
+            y: by,
+            w: (BLOW_BAR_W * puff.clamp(0.0, 1.0)).round(),
+            h: BLOW_BAR_H,
+            colour: faded(BLOW_FILL),
+        });
     }
 
     pub fn set_toast_faces(&mut self, faces: Vec<TexId>) {

@@ -23,6 +23,7 @@ pub enum QuickRow {
     ResumePowerOn,
     Rewind,
     GbPalette,
+    Dusty,
     Theme,
     Wallpaper,
     Recents,
@@ -146,10 +147,11 @@ pub enum QuickRow {
     Overlay,
     BatteryDisplay,
     System,
+    Experimental,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 135 + cfg!(feature = "nds") as usize] = [
+    pub const ALL: [QuickRow; 137 + cfg!(feature = "nds") as usize] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -164,6 +166,7 @@ impl QuickRow {
         QuickRow::ResumePowerOn,
         QuickRow::Rewind,
         QuickRow::GbPalette,
+        QuickRow::Dusty,
         QuickRow::Theme,
         QuickRow::Wallpaper,
         QuickRow::Recents,
@@ -287,6 +290,7 @@ impl QuickRow {
         QuickRow::Overlay,
         QuickRow::BatteryDisplay,
         QuickRow::System,
+        QuickRow::Experimental,
     ];
 
     pub const MAIN: [QuickRow; 6] = [
@@ -451,7 +455,7 @@ impl QuickRow {
         QuickRow::GbStretch,
     ];
 
-    pub const GAME: [QuickRow; 7] = [
+    pub const GAME: [QuickRow; 8] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Rewind,
@@ -459,7 +463,10 @@ impl QuickRow {
         QuickRow::LeftStick,
         QuickRow::ResumeInsert,
         QuickRow::ResumePowerOn,
+        QuickRow::Experimental,
     ];
+
+    pub const EXPERIMENTAL: [QuickRow; 1] = [QuickRow::Dusty];
 
     pub const PLAY: [QuickRow; 9] = [
         QuickRow::Resume,
@@ -539,7 +546,9 @@ impl QuickRow {
             | QuickRow::Rumble
             | QuickRow::LeftStick
             | QuickRow::ResumeInsert
-            | QuickRow::ResumePowerOn => &QuickRow::GAME,
+            | QuickRow::ResumePowerOn
+            | QuickRow::Experimental => &QuickRow::GAME,
+            QuickRow::Dusty => &QuickRow::EXPERIMENTAL,
             QuickRow::Wallpaper
             | QuickRow::WallpaperTint
             | QuickRow::Theme
@@ -607,6 +616,7 @@ impl QuickRow {
             QuickRow::GbcShader => Some(QuickRow::ScreenGbc),
             QuickRow::GbShader => Some(QuickRow::ScreenGb),
             QuickRow::FastForward => Some(QuickRow::Game),
+            QuickRow::Dusty => Some(QuickRow::Experimental),
             QuickRow::PlayScreen => Some(QuickRow::Settings),
             QuickRow::Shader => Some(QuickRow::PlayScreen),
             QuickRow::GameUp => Some(QuickRow::ControlsInGame),
@@ -666,6 +676,7 @@ impl QuickRow {
             QuickRow::ScreenGba => Some(QuickRow::SCREEN_GBA[0]),
             QuickRow::ScreenGbc => Some(QuickRow::SCREEN_GBC[0]),
             QuickRow::ScreenGb => Some(QuickRow::SCREEN_GB[0]),
+            QuickRow::Experimental => Some(QuickRow::EXPERIMENTAL[0]),
             _ => None,
         }
     }
@@ -710,6 +721,7 @@ impl QuickRow {
             QuickRow::ResumePowerOn => "Resume on Power On",
             QuickRow::Rewind => "Rewind",
             QuickRow::GbPalette => "Palette",
+            QuickRow::Dusty => "Dusty Carts",
             QuickRow::Theme => "Theme",
             QuickRow::Wallpaper => "Wallpaper",
             QuickRow::Recents => "Recents",
@@ -815,6 +827,7 @@ impl QuickRow {
             | QuickRow::GbOverlay
             | QuickRow::GbcOverlay
             | QuickRow::Overlay => "Overlay",
+            QuickRow::Experimental => "Experimental",
         }
     }
 
@@ -864,6 +877,7 @@ impl QuickRow {
                 | QuickRow::RommPort
                 | QuickRow::RommPair
                 | QuickRow::RommDisconnect
+                | QuickRow::Experimental
         )
     }
 
