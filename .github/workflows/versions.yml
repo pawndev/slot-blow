@@ -1,0 +1,36 @@
+name: versions
+
+# The OTA updater reads versions.json from the latest release of this fork.
+# release.yml attaches it when a release is made; this refreshes it so a new
+# BaseOS release shows up on devices without waiting for the next slot release.
+
+on:
+  schedule:
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: versions
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: versions.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts/versions.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Attach versions.json to the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          OUT=versions.json SLOT_REPO="$GITHUB_REPOSITORY" bash .github/scripts/versions.sh
+          gh release upload "$tag" versions.json --repo "$GITHUB_REPOSITORY" --clobber

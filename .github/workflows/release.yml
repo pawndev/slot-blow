@@ -100,7 +100,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: CHANGELOG.md
+          sparse-checkout: |
+            CHANGELOG.md
+            .github/scripts/versions.sh
           sparse-checkout-cone-mode: false
 
       - uses: actions/download-artifact@v8
@@ -122,7 +124,10 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "$ZIP" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md
 
-      - name: Publish versions.json with the site
+      - name: Attach versions.json for the OTA updater
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
+        run: |
+          set -eu
+          OUT=versions.json SLOT_REPO="$GITHUB_REPOSITORY" bash .github/scripts/versions.sh
+          gh release upload "$GITHUB_REF_NAME" versions.json --repo "$GITHUB_REPOSITORY" --clobber
