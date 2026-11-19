@@ -1,6 +1,8 @@
 version: '3'
 
 vars:
+  FORK_BRANCH: pawn-main
+  UPSTREAM_REPO: slot-cfw/slot
   CORE: vendor/mgba_libretro.dylib
   GPSP_HOST: vendor/gpsp_libretro.dylib
   GAMBATTE_HOST: vendor/gambatte_libretro.dylib
@@ -134,6 +136,109 @@ tasks:
       - cd "{{.WT}}" && CARGO_TARGET_DIR="{{.ROOT_DIR}}/target-check" task lint lint:device lint:nds test test:card
       - git worktree remove --force "{{.WT}}"
       - 'git tag -a "{{.VERSION}}" -m "slot {{.VERSION}}" -m "Checked: {{.SHA}}" {{.SHA}}'
+
+  # Fork release DAG, eg task release:fork VERSION=v1.16.0
+  #
+  #   release:fork            push the tag, watch release.yml, check the release
+  #   └─ release:fork:tag     task tag (lint, lint:device, lint:nds, test, test:card)
+  #      └─ release:fork:check
+  #         ├─ :branch        HEAD is a clean pawn-main, already on origin
+  #         ├─ :upstream      upstream's VERSION tag is merged into HEAD
+  #         ├─ :changelog     CHANGELOG.md has a VERSION entry for the notes
+  #         └─ :free          VERSION is untagged here and on origin, gh is logged in
+  release:fork:
+    desc: >-
+      Publish the fork's release of an upstream tag from pawn-main, eg task release:fork VERSION=v1.16.0.
+      Checks, runs task tag, pushes the tag to origin and waits for the release workflow
+    requires:
+      vars: [ VERSION ]
+    deps: [ release:fork:tag ]
+    vars:
+      FORK_REPO:
+        sh: git remote get-url origin | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##'
+    cmds:
+      - git push origin "refs/tags/{{.VERSION}}"
+      - |
+        set -eu
+        id=""
+        for _ in $(seq 30); do
+          id=$(gh run list -R "{{.FORK_REPO}}" --workflow release.yml --branch "{{.VERSION}}" --event push -L 1 \
+            --json databaseId -q '.[0].databaseId')
+          [ -n "$id" ] && break
+          sleep 2
+        done
+        test -n "$id" || { echo "no release run started for {{.VERSION}} on {{.FORK_REPO}}"; exit 1; }
+        gh run watch "$id" -R "{{.FORK_REPO}}" --exit-status
+      - |
+        set -eu
+        assets=$(gh release view "{{.VERSION}}" -R "{{.FORK_REPO}}" --json assets -q '.assets[].name')
+        echo "$assets" | grep -qx "slot-{{.VERSION}}-h700.zip"
+        echo "$assets" | grep -qx versions.json
+        gh release view "{{.VERSION}}" -R "{{.FORK_REPO}}" --json url -q .url
+
+  release:fork:tag:
+    desc: Check the fork can release VERSION, then task tag it
+    requires:
+      vars: [ VERSION ]
+    deps: [ release:fork:check ]
+    cmds:
+      - task: tag
+        vars: { VERSION: '{{.VERSION}}' }
+
+  release:fork:check:
+    desc: Fast pre-release checks for VERSION on the fork, run in parallel, nothing is built or pushed
+    requires:
+      vars: [ VERSION ]
+    deps:
+      - release:fork:check:branch
+      - release:fork:check:upstream
+      - release:fork:check:changelog
+      - release:fork:check:free
+    cmds:
+      - 'echo "{{.VERSION}} is ready to tag from {{.FORK_BRANCH}}"'
+
+  release:fork:check:branch:
+    internal: true
+    preconditions:
+      - sh: '[ "$(git branch --show-current)" = "{{.FORK_BRANCH}}" ]'
+        msg: Releases are cut from {{.FORK_BRANCH}}, check it out first
+      - sh: '[ -z "$(git status --porcelain)" ]'
+        msg: The working tree is dirty, commit or stash first
+      - sh: 'git fetch -q origin {{.FORK_BRANCH}} && [ "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)" ]'
+        msg: HEAD is not origin/{{.FORK_BRANCH}}, push or pull first
+
+  release:fork:check:upstream:
+    internal: true
+    silent: true
+    cmds:
+      - |
+        set -eu
+        sha=$(git ls-remote --tags "https://github.com/{{.UPSTREAM_REPO}}.git" \
+          "refs/tags/{{.VERSION}}" "refs/tags/{{.VERSION}}^{}" | tail -1 | cut -f1)
+        test -n "$sha" || { echo "{{.UPSTREAM_REPO}} has no {{.VERSION}} tag"; exit 1; }
+        git cat-file -e "$sha^{commit}" 2>/dev/null \
+          || { echo "upstream {{.VERSION}} ($sha) is not in this clone, sync main from upstream and merge it"; exit 1; }
+        git merge-base --is-ancestor "$sha" HEAD \
+          || { echo "upstream {{.VERSION}} ($sha) is not merged into {{.FORK_BRANCH}}"; exit 1; }
+        echo "upstream {{.VERSION}} is $sha, merged into HEAD"
+
+  release:fork:check:changelog:
+    internal: true
+    preconditions:
+      - sh: echo "{{.VERSION}}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+        msg: VERSION must look like v1.16.0
+      - sh: grep -q '^## \[{{trimPrefix "v" .VERSION}}\]' CHANGELOG.md
+        msg: CHANGELOG.md has no "## [{{trimPrefix "v" .VERSION}}]" entry, the release notes come from it
+
+  release:fork:check:free:
+    internal: true
+    preconditions:
+      - sh: '! git rev-parse -q --verify "refs/tags/{{.VERSION}}" >/dev/null'
+        msg: '{{.VERSION}} is already tagged locally (upstream tags fetched?), delete it with git tag -d {{.VERSION}}'
+      - sh: '! git ls-remote --exit-code --tags origin "refs/tags/{{.VERSION}}" >/dev/null'
+        msg: '{{.VERSION}} is already on origin'
+      - sh: gh auth status >/dev/null 2>&1
+        msg: gh is not logged in, run gh auth login
 
   check:
     desc: Everything a CI run would do
