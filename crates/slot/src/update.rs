@@ -303,7 +303,8 @@ impl<R: Read> Read for Stoppable<R> {
 }
 
 pub const WIFI_CONF: &str = "Config/wifi.conf";
-pub const LATEST: &str = "https://github.com/pawndev/slot-blow/releases/latest/download/versions.json";
+pub const LATEST: &str =
+    "https://github.com/pawndev/slot-blow/releases/latest/download/versions.json";
 const RELEASES: &str = "https://github.com/pawndev/slot-blow/releases/download";
 const BASEOS_RELEASES: &str = "https://github.com/pvaibhav/BaseOS/releases/download";
 

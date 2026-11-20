@@ -17,6 +17,13 @@ fn setup() -> Option<(TempDir, Frontend, Compositor, HeadlessSurface)> {
     Some((d, f, compositor, surface))
 }
 
+/// Ticks a wait loop until a wall-clock deadline. The studio's faces are built on
+/// background threads, so a fixed count of frames runs out first on a loaded machine.
+fn for_a_while() -> impl Iterator<Item = ()> {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    std::iter::from_fn(move || (std::time::Instant::now() < end).then_some(()))
+}
+
 fn px(frame: &[u8], x: usize, y: usize) -> [u8; 3] {
     let o = (y * OUT_W as usize + x) * 4;
     [frame[o], frame[o + 1], frame[o + 2]]
@@ -284,7 +291,7 @@ mod apply {
                 failed: None,
             }));
         press(&mut f, Btn::A);
-        for _ in 0..200 {
+        for () in for_a_while() {
             let now = f.app().now();
             f.app_mut().tick_ms(now + 40);
             f.compose(&mut c);
@@ -836,7 +843,7 @@ mod apply {
         std::fs::write(d.path().join("Labels/GB/Kirby.png"), b"not a png").unwrap();
         let mut f = Frontend::boot(Box::new(SimPlatform::at(d.path().to_path_buf())));
         f.app_mut().apply(Action::SelectTap);
-        for _ in 0..400 {
+        for () in for_a_while() {
             let now = f.app().now();
             f.app_mut().tick_ms(now + 5);
             f.compose(&mut c);
@@ -1153,7 +1160,7 @@ mod apply {
                 failed: None,
             }));
         press(&mut f, Btn::A);
-        for _ in 0..200 {
+        for () in for_a_while() {
             let now = f.app().now();
             f.app_mut().tick_ms(now + 5);
             f.compose(&mut c);
